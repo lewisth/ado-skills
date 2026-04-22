@@ -25,12 +25,21 @@ Run the `ado-context` skill first. It loads `.ado-skills.json` (or runs a one-ti
 - `AREA_PATH` — loaded from `.ado-skills.json`
 - `ITERATION_PATH` — the iteration containing today's date
 
-Every field below assumes those variables are already in scope, and that `AUTH` and `PROJECT_ENCODED` are set:
+Every field below assumes those variables are already in scope, and that `AUTH` and `PROJECT_ENCODED` are set.
 
+**Bash:**
 ```bash
 AUTH=$(printf ':%s' "$AZURE_DEVOPS_PAT" | base64)
 PROJECT_ENCODED=$(printf '%s' "$PROJECT" | jq -sRr @uri)
 ```
+
+**PowerShell:**
+```powershell
+$AUTH = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes(":$env:AZURE_DEVOPS_PAT"))
+$PROJECT_ENCODED = [Uri]::EscapeDataString($PROJECT)
+```
+
+> **Agent context note:** Each shell invocation is a fresh process. Set `AZURE_DEVOPS_PAT` (and all other variables) at the top of every script block — they do not persist between calls.
 
 ## Process
 
@@ -58,6 +67,7 @@ Caveats:
 - Once a field is saved as `Markdown`, it **cannot be reverted** to HTML.
 - If the org hasn't enabled Markdown for work items, the call will error — fall back to HTML (see step 4).
 
+**Bash:**
 ```bash
 PRD_MD=$(cat <<'EOF'
 <full PRD content using the template below>
@@ -80,25 +90,60 @@ ITEM=$(curl -s -X POST \
   -H "Authorization: Basic $AUTH" \
   -H "Content-Type: application/json-patch+json" \
   -d "$PAYLOAD" \
-  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/\$Feature?api-version=7.2")
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/\$Feature?api-version=7.1")
 
 FEATURE_ID=$(echo "$ITEM" | jq '.id')
 echo "https://dev.azure.com/$ORG_NAME/$PROJECT/_workitems/edit/$FEATURE_ID"
+```
+
+**PowerShell:**
+```powershell
+$PRD_MD = @"
+<full PRD content using the template below>
+"@
+
+$PAYLOAD = @(
+  @{ op = "add"; path = "/fields/System.Title";                      value = "Feature title" }
+  @{ op = "add"; path = "/fields/System.AreaPath";                   value = $AREA_PATH }
+  @{ op = "add"; path = "/fields/System.IterationPath";              value = $ITERATION_PATH }
+  @{ op = "add"; path = "/fields/System.Description";                value = $PRD_MD }
+  @{ op = "add"; path = "/multilineFieldsFormat/System.Description"; value = "Markdown" }
+) | ConvertTo-Json
+
+$ITEM = Invoke-RestMethod `
+  -Method Post `
+  -Uri "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/`$Feature?api-version=7.1" `
+  -Headers @{ Authorization = "Basic $AUTH" } `
+  -ContentType "application/json-patch+json" `
+  -Body $PAYLOAD
+
+$FEATURE_ID = $ITEM.id
+Write-Host "https://dev.azure.com/$ORG_NAME/$PROJECT/_workitems/edit/$FEATURE_ID"
 ```
 
 ### 4. Verify the Description
 
 Confirm the PRD landed in `System.Description` with the right format before handing off:
 
+**Bash:**
 ```bash
 curl -s \
   -H "Authorization: Basic $AUTH" \
-  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.2" \
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.1" \
   | jq -r '.fields["System.Description"]'
+```
+
+**PowerShell:**
+```powershell
+$check = Invoke-RestMethod `
+  -Uri "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.1" `
+  -Headers @{ Authorization = "Basic $AUTH" }
+$check.fields.'System.Description'
 ```
 
 If the description is empty, patch it:
 
+**Bash:**
 ```bash
 PATCH=$(jq -n --arg md "$PRD_MD" '[
   { op: "add", path: "/fields/System.Description",                value: $md },
@@ -109,10 +154,25 @@ curl -s -X PATCH \
   -H "Authorization: Basic $AUTH" \
   -H "Content-Type: application/json-patch+json" \
   -d "$PATCH" \
-  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.2"
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.1"
 ```
 
-If the initial create failed with an error about `multilineFieldsFormat` being unknown, the org hasn't enabled Markdown for work items. Retry without the `multilineFieldsFormat` op and convert the PRD to HTML first (e.g. `pandoc -f gfm -t html`).
+**PowerShell:**
+```powershell
+$PATCH = @(
+  @{ op = "add"; path = "/fields/System.Description";                value = $PRD_MD }
+  @{ op = "add"; path = "/multilineFieldsFormat/System.Description"; value = "Markdown" }
+) | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Method Patch `
+  -Uri "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.1" `
+  -Headers @{ Authorization = "Basic $AUTH" } `
+  -ContentType "application/json-patch+json" `
+  -Body $PATCH
+```
+
+If the initial create failed with an error about `multilineFieldsFormat` being unknown, the org hasn't enabled Markdown for work items. Retry without the `multilineFieldsFormat` op. To convert the PRD to HTML: on Bash use `pandoc -f gfm -t html`; on PowerShell use `ConvertFrom-Markdown` (PowerShell 6+) or any Markdown-to-HTML library.
 
 ### 5. Hand off
 

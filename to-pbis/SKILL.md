@@ -31,12 +31,21 @@ Run the `ado-context` skill first. It loads `.ado-skills.json` (or runs a one-ti
 - `AREA_PATH` — loaded from `.ado-skills.json`
 - `ITERATION_PATH` — the iteration containing today's date
 
-Every field below assumes those variables are already in scope, and that `AUTH` and `PROJECT_ENCODED` are set:
+Every field below assumes those variables are already in scope, and that `AUTH` and `PROJECT_ENCODED` are set.
 
+**Bash:**
 ```bash
 AUTH=$(printf ':%s' "$AZURE_DEVOPS_PAT" | base64)
 PROJECT_ENCODED=$(printf '%s' "$PROJECT" | jq -sRr @uri)
 ```
+
+**PowerShell:**
+```powershell
+$AUTH = [System.Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes(":$env:AZURE_DEVOPS_PAT"))
+$PROJECT_ENCODED = [Uri]::EscapeDataString($PROJECT)
+```
+
+> **Agent context note:** Each shell invocation is a fresh process. Set `AZURE_DEVOPS_PAT` (and all other variables) at the top of every script block — they do not persist between calls.
 
 ## Process
 
@@ -44,10 +53,18 @@ PROJECT_ENCODED=$(printf '%s' "$PROJECT" | jq -sRr @uri)
 
 The parent Feature ID should come from the user (typically just produced by `to-feature`). If they don't supply one, ask. Fetch its details:
 
+**Bash:**
 ```bash
 curl -s \
   -H "Authorization: Basic $AUTH" \
-  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.2"
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.1"
+```
+
+**PowerShell:**
+```powershell
+$feature = Invoke-RestMethod `
+  -Uri "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.1" `
+  -Headers @{ Authorization = "Basic $AUTH" }
 ```
 
 Use its PRD description as the primary source material.
@@ -100,6 +117,7 @@ Apply a tag to each PBI based on its classification:
 
 For each approved slice, build the description and create the work item:
 
+**Bash:**
 ```bash
 DESCRIPTION=$(cat <<EOF
 ## Repository
@@ -142,13 +160,56 @@ ITEM=$(curl -s -X POST \
   -H "Authorization: Basic $AUTH" \
   -H "Content-Type: application/json-patch+json" \
   -d "$PAYLOAD" \
-  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/\$$STORY_TYPE_ENCODED?api-version=7.2")
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/\$$STORY_TYPE_ENCODED?api-version=7.1")
 
 ITEM_ID=$(echo "$ITEM" | jq '.id')
 ```
 
+**PowerShell:**
+```powershell
+$DESCRIPTION = @"
+## Repository
+
+$REPOSITORY_URL
+
+## What to build
+
+A concise description of this vertical slice. End-to-end behavior, not layer-by-layer implementation.
+
+## Acceptance criteria
+
+- [ ] Criterion 1
+- [ ] Criterion 2
+
+## Blocked by
+
+#<work-item-id> (or "None — can start immediately")
+"@
+
+$PAYLOAD = @(
+  @{ op = "add"; path = "/fields/System.Title";                      value = "Slice title" }
+  @{ op = "add"; path = "/fields/System.AreaPath";                   value = $AREA_PATH }
+  @{ op = "add"; path = "/fields/System.IterationPath";              value = $ITERATION_PATH }
+  @{ op = "add"; path = "/fields/System.Tags";                       value = "ready-for-agent" }
+  @{ op = "add"; path = "/fields/System.Description";                value = $DESCRIPTION }
+  @{ op = "add"; path = "/multilineFieldsFormat/System.Description"; value = "Markdown" }
+) | ConvertTo-Json
+
+$STORY_TYPE_ENCODED = [Uri]::EscapeDataString($STORY_TYPE)
+
+$ITEM = Invoke-RestMethod `
+  -Method Post `
+  -Uri "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/`$$STORY_TYPE_ENCODED?api-version=7.1" `
+  -Headers @{ Authorization = "Basic $AUTH" } `
+  -ContentType "application/json-patch+json" `
+  -Body $PAYLOAD
+
+$ITEM_ID = $ITEM.id
+```
+
 Link each PBI as a **child** of the parent Feature. The relation type `System.LinkTypes.Hierarchy-Reverse` means "the target is my parent":
 
+**Bash:**
 ```bash
 PARENT_PAYLOAD=$(jq -n \
   --arg feature_url "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID" \
@@ -166,11 +227,34 @@ curl -s -X PATCH \
   -H "Authorization: Basic $AUTH" \
   -H "Content-Type: application/json-patch+json" \
   -d "$PARENT_PAYLOAD" \
-  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$ITEM_ID?api-version=7.2"
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$ITEM_ID?api-version=7.1"
+```
+
+**PowerShell:**
+```powershell
+$PARENT_PAYLOAD = @(
+  @{
+    op    = "add"
+    path  = "/relations/-"
+    value = @{
+      rel        = "System.LinkTypes.Hierarchy-Reverse"
+      url        = "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID"
+      attributes = @{ comment = "" }
+    }
+  }
+) | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+  -Method Patch `
+  -Uri "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$ITEM_ID?api-version=7.1" `
+  -Headers @{ Authorization = "Basic $AUTH" } `
+  -ContentType "application/json-patch+json" `
+  -Body $PARENT_PAYLOAD
 ```
 
 Link blocking relationships between PBIs. The relation type `System.LinkTypes.Dependency-Forward` means "the target is my predecessor" (I am blocked by the target):
 
+**Bash:**
 ```bash
 PREDECESSOR_PAYLOAD=$(jq -n \
   --arg blocker_url "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$BLOCKER_ID" \
@@ -188,7 +272,29 @@ curl -s -X PATCH \
   -H "Authorization: Basic $AUTH" \
   -H "Content-Type: application/json-patch+json" \
   -d "$PREDECESSOR_PAYLOAD" \
-  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$ITEM_ID?api-version=7.2"
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$ITEM_ID?api-version=7.1"
+```
+
+**PowerShell:**
+```powershell
+$PREDECESSOR_PAYLOAD = @(
+  @{
+    op    = "add"
+    path  = "/relations/-"
+    value = @{
+      rel        = "System.LinkTypes.Dependency-Forward"
+      url        = "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$BLOCKER_ID"
+      attributes = @{ comment = "" }
+    }
+  }
+) | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod `
+  -Method Patch `
+  -Uri "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$ITEM_ID?api-version=7.1" `
+  -Headers @{ Authorization = "Basic $AUTH" } `
+  -ContentType "application/json-patch+json" `
+  -Body $PREDECESSOR_PAYLOAD
 ```
 
 ### 6. Report out
