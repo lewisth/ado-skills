@@ -80,7 +80,7 @@ ITEM=$(curl -s -X POST \
   -H "Authorization: Basic $AUTH" \
   -H "Content-Type: application/json-patch+json" \
   -d "$PAYLOAD" \
-  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/\$Feature?api-version=7.1")
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/\$Feature?api-version=7.2")
 
 FEATURE_ID=$(echo "$ITEM" | jq '.id')
 echo "https://dev.azure.com/$ORG_NAME/$PROJECT/_workitems/edit/$FEATURE_ID"
@@ -93,7 +93,7 @@ Confirm the PRD landed in `System.Description` with the right format before hand
 ```bash
 curl -s \
   -H "Authorization: Basic $AUTH" \
-  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.1" \
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.2" \
   | jq -r '.fields["System.Description"]'
 ```
 
@@ -109,7 +109,7 @@ curl -s -X PATCH \
   -H "Authorization: Basic $AUTH" \
   -H "Content-Type: application/json-patch+json" \
   -d "$PATCH" \
-  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.1"
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.2"
 ```
 
 If the initial create failed with an error about `multilineFieldsFormat` being unknown, the org hasn't enabled Markdown for work items. Retry without the `multilineFieldsFormat` op and convert the PRD to HTML first (e.g. `pandoc -f gfm -t html`).

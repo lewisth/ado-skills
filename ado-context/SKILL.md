@@ -115,7 +115,7 @@ PROJECT_ENCODED=$(printf '%s' "$PROJECT" | jq -sRr @uri)
 
 PROCESS=$(curl -s \
   -H "Authorization: Basic $AUTH" \
-  "https://dev.azure.com/$ORG_NAME/_apis/projects/$PROJECT_ENCODED?includeCapabilities=true&api-version=7.1" \
+  "https://dev.azure.com/$ORG_NAME/_apis/projects/$PROJECT_ENCODED?includeCapabilities=true&api-version=7.2" \
   | jq -r '.capabilities.processTemplate.templateName')
 ```
 
@@ -128,7 +128,7 @@ Fetch the area tree and flatten it to a list of paths for the user to choose fro
 ```bash
 curl -s \
   -H "Authorization: Basic $AUTH" \
-  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/classificationnodes/areas?\$depth=10&api-version=7.1" \
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/classificationnodes/areas?\$depth=10&api-version=7.2" \
   | jq -r 'recurse(.children[]?) | .path'
 ```
 
@@ -173,7 +173,7 @@ TEAM_ENCODED=$(printf '%s' "$TEAM" | jq -sRr @uri)
 
 ITERATION_PATH=$(curl -s \
   -H "Authorization: Basic $AUTH" \
-  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/$TEAM_ENCODED/_apis/work/teamsettings/iterations?\$timeframe=current&api-version=7.1" \
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/$TEAM_ENCODED/_apis/work/teamsettings/iterations?\$timeframe=current&api-version=7.2" \
   | jq -r '.value[0].path // empty')
 ```
 

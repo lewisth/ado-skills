@@ -47,7 +47,7 @@ The parent Feature ID should come from the user (typically just produced by `to-
 ```bash
 curl -s \
   -H "Authorization: Basic $AUTH" \
-  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.1"
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.2"
 ```
 
 Use its PRD description as the primary source material.
@@ -142,7 +142,7 @@ ITEM=$(curl -s -X POST \
   -H "Authorization: Basic $AUTH" \
   -H "Content-Type: application/json-patch+json" \
   -d "$PAYLOAD" \
-  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/\$$STORY_TYPE_ENCODED?api-version=7.1")
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/\$$STORY_TYPE_ENCODED?api-version=7.2")
 
 ITEM_ID=$(echo "$ITEM" | jq '.id')
 ```
@@ -166,7 +166,7 @@ curl -s -X PATCH \
   -H "Authorization: Basic $AUTH" \
   -H "Content-Type: application/json-patch+json" \
   -d "$PARENT_PAYLOAD" \
-  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$ITEM_ID?api-version=7.1"
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$ITEM_ID?api-version=7.2"
 ```
 
 Link blocking relationships between PBIs. The relation type `System.LinkTypes.Dependency-Forward` means "the target is my predecessor" (I am blocked by the target):
@@ -188,7 +188,7 @@ curl -s -X PATCH \
   -H "Authorization: Basic $AUTH" \
   -H "Content-Type: application/json-patch+json" \
   -d "$PREDECESSOR_PAYLOAD" \
-  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$ITEM_ID?api-version=7.1"
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$ITEM_ID?api-version=7.2"
 ```
 
 ### 6. Report out
