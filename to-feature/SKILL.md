@@ -1,34 +1,31 @@
 ---
 name: to-feature
-description: Turn the current conversation context (typically from build-a-spec) into a PRD and submit it as an Azure DevOps Feature work item. Use when user wants to create a Feature in ADO from the current shared understanding, or mentions "to-feature".
+description: Turn the current conversation context (typically from spec-it) into a PRD and submit it as an Azure DevOps Feature work item. Use when user wants to create a Feature in ADO from the current shared understanding, or mentions "to-feature".
 ---
 
 # To Feature
 
-Takes the current conversation context — typically the shared understanding produced by `build-a-spec` — and creates an Azure DevOps **Feature** work item with the PRD as its description.
+Takes the current conversation context — typically the shared understanding produced by `spec-it` — and creates an Azure DevOps **Feature** work item with the PRD as its description.
 
 Do NOT re-interview the user. Synthesize what you already know.
 
-This is step **2** of the workflow:
+This is step **2** of the per-feature loop (prerequisite: `ado-context` has been run once to create `.ado-skills.json`):
 
-1. `build-a-spec` — reach shared understanding
+1. `spec-it` — reach shared understanding
 2. **`to-feature`** — create the Feature with the PRD  ← you are here
 3. `to-pbis` — vertically slice the Feature into PBIs using tracer bullets
 
 ## Detect ADO Context
 
-Parse org and project from `git remote get-url origin`:
+Run the `ado-context` skill first. It loads `.ado-skills.json` (or runs a one-time setup to create it) and resolves today's iteration, exporting:
 
-- HTTPS: `https://dev.azure.com/{org}/{project}/_git/{repo}`
-- SSH: `git@ssh.dev.azure.com:v3/{org}/{project}/{repo}`
-- Legacy: `https://{org}.visualstudio.com/{project}/_git/{repo}`
+- `ORG` / `ORG_NAME` / `PROJECT` — loaded from `.ado-skills.json`
+- `PROCESS` — process template (affects story type names used downstream by `to-pbis`)
+- `REPOSITORY_URL` — the canonical repo URL; append it to the PRD so the downstream agent works on the right code
+- `AREA_PATH` — loaded from `.ado-skills.json`
+- `ITERATION_PATH` — the iteration containing today's date (via `--timeframe current`)
 
-Detect process template (affects story type names used downstream by `to-pbis`):
-
-```bash
-az devops project show --org $ORG --project "$PROJECT" \
-  --query "capabilities.processTemplate.templateName" -o tsv
-```
+Every field below assumes those variables are already in scope.
 
 ## Process
 
@@ -47,31 +44,85 @@ Briefly check with the user:
 
 ### 3. Create the ADO Feature
 
-Write the PRD using the template below and create the Feature. Do NOT ask for review first — create it.
+Write the PRD using the template below. The **entire PRD** becomes the Feature's **Description** field (`System.Description`). Do NOT ask for review first — create it.
+
+Azure DevOps supports Markdown on large text fields (`System.Description`, `Microsoft.VSTS.Common.AcceptanceCriteria`, etc.), but the format defaults to HTML. To store the PRD as Markdown you must also set `multilineFieldsFormat/System.Description = Markdown` in the same patch. The `az boards work-item` CLI doesn't expose this flag, so use `az rest` to hit the REST API directly.
+
+Caveats:
+
+- Once a field is saved as `Markdown`, it **cannot be reverted** to HTML.
+- If the org hasn't enabled Markdown for work items, the call will error — fall back to HTML (see step 4).
 
 ```bash
-ITEM=$(az boards work-item create \
-  --org $ORG \
-  --project "$PROJECT" \
-  --type "Feature" \
-  --title "Feature title" \
-  --description "$(cat <<'EOF'
-<PRD content>
+PRD_MD=$(cat <<'EOF'
+<full PRD content using the template below>
 EOF
-)" \
-  --output json)
+)
 
-FEATURE_ID=$(echo $ITEM | jq '.id')
+PAYLOAD=$(jq -n \
+  --arg md "$PRD_MD" \
+  --arg title "Feature title" \
+  --arg area "$AREA_PATH" \
+  --arg iter "$ITERATION_PATH" '[
+  { op: "add", path: "/fields/System.Title",                          value: $title },
+  { op: "add", path: "/fields/System.AreaPath",                       value: $area },
+  { op: "add", path: "/fields/System.IterationPath",                  value: $iter },
+  { op: "add", path: "/fields/System.Description",                    value: $md },
+  { op: "add", path: "/multilineFieldsFormat/System.Description",     value: "Markdown" }
+]')
+
+ITEM=$(az rest \
+  --method POST \
+  --uri "https://dev.azure.com/$ORG_NAME/$PROJECT/_apis/wit/workitems/\$Feature?api-version=7.1" \
+  --headers "Content-Type=application/json-patch+json" \
+  --body "$PAYLOAD")
+
+FEATURE_ID=$(echo "$ITEM" | jq '.id')
 echo "https://dev.azure.com/$ORG_NAME/$PROJECT/_workitems/edit/$FEATURE_ID"
 ```
 
-### 4. Hand off
+### 4. Verify the Description
+
+Confirm the PRD landed in `System.Description` with the right format before handing off:
+
+```bash
+az boards work-item show \
+  --org $ORG \
+  --id $FEATURE_ID \
+  --query "fields.\"System.Description\"" \
+  -o tsv
+```
+
+If the description is empty, patch it:
+
+```bash
+PATCH=$(jq -n --arg md "$PRD_MD" '[
+  { op: "add", path: "/fields/System.Description",                value: $md },
+  { op: "add", path: "/multilineFieldsFormat/System.Description", value: "Markdown" }
+]')
+
+az rest \
+  --method PATCH \
+  --uri "https://dev.azure.com/$ORG_NAME/$PROJECT/_apis/wit/workitems/$FEATURE_ID?api-version=7.1" \
+  --headers "Content-Type=application/json-patch+json" \
+  --body "$PATCH"
+```
+
+If the initial create failed with an error about `multilineFieldsFormat` being unknown, the org hasn't enabled Markdown for work items. Retry without the `multilineFieldsFormat` op and convert the PRD to HTML first (e.g. `pandoc -f gfm -t html`).
+
+### 5. Hand off
 
 Print the Feature ID and URL, and remind the user the next step is `to-pbis` referencing this Feature ID.
 
 ## PRD Template
 
+Prepend a `## Repository` section with `$REPOSITORY_URL` (so every Feature self-documents the repo agents should work in), then fill in the rest:
+
 ```
+## Repository
+
+https://dev.azure.com/<org>/<project>/_git/<repo>
+
 ## Problem Statement
 
 The problem the user is facing, from the user's perspective.

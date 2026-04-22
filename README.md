@@ -9,36 +9,74 @@ az extension add --name azure-devops
 az login
 ```
 
+Org, project, process template, repository URL, and area path are all **static per repo** — so `ado-context` runs a one-time setup that persists them to `.ado-skills.json`, and every subsequent invocation just reads the file. The iteration path is the only thing computed fresh each run, from today's date.
+
+Example `.ado-skills.json` (commit this so your team and any CI agents share the same defaults):
+
+```json
+{
+  "organizationUrl": "https://dev.azure.com/contoso",
+  "project": "My Project",
+  "process": "Scrum",
+  "repositoryUrl": "https://dev.azure.com/contoso/My Project/_git/my-repo",
+  "areaPath": "My Project\\Squad A"
+}
+```
+
+- **Repository URL** — embedded in every Feature PRD and PBI description so downstream agents check out the right code.
+- **Area path** — persisted once; change by editing `.ado-skills.json`.
+- **Iteration path** — computed from today's date via `az boards iteration project list --timeframe current`, with the project default as a fallback.
+
 ## Workflow
 
-These three skills chain together to take a rough idea all the way to independently-grabbable ADO work items for AI agents:
+### Setup (once per repo)
+
+Run **`ado-context`** once. It detects org, project, process template, and repository URL from `git remote`, prompts for an area path, and writes `.ado-skills.json`. Commit the file so your team and any CI agents share the same defaults.
+
+### Per-feature loop
+
+These three skills chain together to take a rough idea all the way to independently-grabbable ADO work items for AI agents. `to-feature` and `to-pbis` silently re-invoke `ado-context` to reload `.ado-skills.json` and calculate today's iteration.
 
 1. **spec-it** — reach shared understanding
 2. **to-feature** — create an ADO Feature with the PRD
 3. **to-pbis** — vertically slice the Feature into PBIs (or User Stories / Requirements, depending on process template)
 
+Install all of them at once:
+
+```bash
+npx skills@latest add lewisth/ado-skills
+```
+
 ### spec-it
 
 Pair design with our LLM of choice about a plan or design until every branch of the decision tree is resolved.
 
+```bash
+npx skills@latest add lewisth/ado-skills --skill spec-it
 ```
-npx skills@latest add lewistharper/ado-skills/spec-it
+
+### ado-context
+
+Resolve the shared Azure DevOps context (org, project, process template, repository URL, area path, iteration path) used by the other ADO skills. Runs a one-time setup per repo that writes the static values to `.ado-skills.json`; afterwards just reads the file and calculates today's iteration.
+
+```bash
+npx skills@latest add lewisth/ado-skills --skill ado-context
 ```
 
 ### to-feature
 
 Turn the current conversation context (typically from `spec-it`) into a PRD and submit it as an Azure DevOps **Feature** work item.
 
-```
-npx skills@latest add lewistharper/ado-skills/to-feature
+```bash
+npx skills@latest add lewisth/ado-skills --skill to-feature
 ```
 
 ### to-pbis
 
 Break a Feature into independently-grabbable PBIs using tracer-bullet vertical slices. Links each PBI as a child of the parent Feature and preserves blocking relationships as predecessors. Tags AFK slices `ready-for-agent` and HITL slices `ready-for-human`.
 
-```
-npx skills@latest add lewistharper/ado-skills/to-pbis
+```bash
+npx skills@latest add lewisth/ado-skills --skill to-pbis
 ```
 
 ## ADO Concepts Reference
@@ -53,8 +91,6 @@ npx skills@latest add lewistharper/ado-skills/to-pbis
 | `gh issue list` | `az boards query --wiql` |
 | `gh pr create` | `az repos pr create` |
 
-| Process | Story type           | Task type |
-| ------- | -------------------- | --------- |
-| Agile   | User Story           | Task      |
-| Scrum   | Product Backlog Item | Task      |
-| CMMI    | Requirement          | Task      |
+---
+
+The workflow and skills is heavily inspired by [mattpocock/skills](https://github.com/mattpocock/skills). Go check out Matt's courses at [AIHero](https://www.aihero.dev/) and [Total TypeScript](https://www.totaltypescript.com/) — seriously good stuff.

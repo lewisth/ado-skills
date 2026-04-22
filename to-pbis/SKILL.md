@@ -7,9 +7,9 @@ description: Vertically slice an Azure DevOps Feature into PBIs (or User Stories
 
 Break a Feature into independently-grabbable **PBIs** using tracer-bullet vertical slices, linked as children of the parent Feature.
 
-This is step **3** of the workflow:
+This is step **3** of the per-feature loop (prerequisite: `ado-context` has been run once to create `.ado-skills.json`):
 
-1. `build-a-spec` — reach shared understanding
+1. `spec-it` — reach shared understanding
 2. `to-feature` — create the Feature with the PRD
 3. **`to-pbis`** — vertically slice the Feature into PBIs using tracer bullets  ← you are here
 
@@ -23,18 +23,15 @@ This is step **3** of the workflow:
 
 ## Detect ADO Context
 
-Parse org and project from `git remote get-url origin`:
+Run the `ado-context` skill first. It loads `.ado-skills.json` (or runs a one-time setup to create it) and resolves today's iteration, exporting:
 
-- HTTPS: `https://dev.azure.com/{org}/{project}/_git/{repo}`
-- SSH: `git@ssh.dev.azure.com:v3/{org}/{project}/{repo}`
-- Legacy: `https://{org}.visualstudio.com/{project}/_git/{repo}`
+- `ORG` / `ORG_NAME` / `PROJECT` — loaded from `.ado-skills.json`
+- `PROCESS` — process template; use it to pick the right story type (User Story / Product Backlog Item / Requirement)
+- `REPOSITORY_URL` — the canonical repo URL; include it in each PBI description so the downstream agent works on the right code
+- `AREA_PATH` — loaded from `.ado-skills.json`
+- `ITERATION_PATH` — the iteration containing today's date (via `--timeframe current`)
 
-Detect process template to select the correct story type:
-
-```bash
-az devops project show --org $ORG --project "$PROJECT" \
-  --query "capabilities.processTemplate.templateName" -o tsv
-```
+Every field below assumes those variables are already in scope.
 
 ## Process
 
@@ -102,8 +99,14 @@ ITEM=$(az boards work-item create \
   --project "$PROJECT" \
   --type "$STORY_TYPE" \
   --title "Slice title" \
+  --area "$AREA_PATH" \
+  --iteration "$ITERATION_PATH" \
   --tags "ready-for-agent" \
-  --description "$(cat <<'EOF'
+  --description "$(cat <<EOF
+## Repository
+
+$REPOSITORY_URL
+
 ## What to build
 
 A concise description of this vertical slice. End-to-end behavior, not layer-by-layer implementation.
