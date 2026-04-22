@@ -19,6 +19,19 @@ All but `ITERATION_PATH` are **static per repo** — they don't move. Resolve th
 
 Run this **before** any skill that creates or updates work items (`to-feature`, `to-pbis`, …). Export the values so downstream steps can reference them without re-resolving.
 
+## Authentication
+
+All REST calls use a Personal Access Token (PAT). The PAT must be set in the environment as `AZURE_DEVOPS_PAT` with at least **Read** scope on Project and Work Items (and **Read & Write** for skills that create items).
+
+Build the auth header once at the start of every skill that calls this:
+
+```bash
+AUTH=$(printf ':%s' "$AZURE_DEVOPS_PAT" | base64)
+# Usage: -H "Authorization: Basic $AUTH"
+```
+
+If `AZURE_DEVOPS_PAT` is unset, stop and tell the user to set it before continuing.
+
 ## Config file
 
 `.ado-skills.json` lives at the repo root and is committed so the whole team shares the same defaults:
@@ -29,13 +42,24 @@ Run this **before** any skill that creates or updates work items (`to-feature`, 
   "project": "My Project",
   "process": "Scrum",
   "repositoryUrl": "https://dev.azure.com/contoso/My Project/_git/my-repo",
-  "areaPath": "My Project\\Squad A"
+  "areaPath": "My Project\\Squad A",
+  "team": "My Project Team"
 }
 ```
 
-Backslashes must be escaped in JSON. `iterationPath` is **not** stored — it's calculated on every run.
+Backslashes must be escaped in JSON. `iterationPath` is **not** stored — it's calculated on every run. `team` defaults to `{project} Team` if omitted.
 
 ## Process
+
+### 0. Set up auth
+
+```bash
+if [ -z "$AZURE_DEVOPS_PAT" ]; then
+  echo "AZURE_DEVOPS_PAT is not set. Please create a PAT in Azure DevOps and export it."
+  exit 1
+fi
+AUTH=$(printf ':%s' "$AZURE_DEVOPS_PAT" | base64)
+```
 
 ### 1. Load `.ado-skills.json` if it exists
 
@@ -48,6 +72,7 @@ if [ -f "$CONFIG_FILE" ]; then
   export PROCESS=$(jq -r '.process // empty'          "$CONFIG_FILE")
   export REPOSITORY_URL=$(jq -r '.repositoryUrl // empty' "$CONFIG_FILE")
   export AREA_PATH=$(jq -r '.areaPath // empty'       "$CONFIG_FILE")
+  export TEAM=$(jq -r '.team // empty'                "$CONFIG_FILE")
   export ORG_NAME=$(basename "$ORG")
 fi
 ```
@@ -83,25 +108,41 @@ Confirm the derived values with the user before persisting — especially if the
 
 #### 2b. Detect the process template
 
+URL-encode the project name (spaces become `%20`) and call the Projects API:
+
 ```bash
-PROCESS=$(az devops project show --org "$ORG" --project "$PROJECT" \
-  --query "capabilities.processTemplate.templateName" -o tsv)
+PROJECT_ENCODED=$(printf '%s' "$PROJECT" | jq -sRr @uri)
+
+PROCESS=$(curl -s \
+  -H "Authorization: Basic $AUTH" \
+  "https://dev.azure.com/$ORG_NAME/_apis/projects/$PROJECT_ENCODED?includeCapabilities=true&api-version=7.1" \
+  | jq -r '.capabilities.processTemplate.templateName')
 ```
 
 This picks the right story type downstream (User Story / Product Backlog Item / Requirement).
 
 #### 2c. Pick an area path
 
-List the available areas and prompt the user:
+Fetch the area tree and flatten it to a list of paths for the user to choose from:
 
 ```bash
-az boards area project list --org "$ORG" --project "$PROJECT" --depth 10 \
-  --query "[].path" -o tsv
+curl -s \
+  -H "Authorization: Basic $AUTH" \
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/classificationnodes/areas?\$depth=10&api-version=7.1" \
+  | jq -r 'recurse(.children[]?) | .path'
 ```
 
-If the user has no preference, fall back to the project root (`$PROJECT`) — that's ADO's own default.
+Present the list and prompt the user to pick one. If the user has no preference, fall back to the project root (`$PROJECT`) — that's ADO's own default.
 
-#### 2d. Write `.ado-skills.json`
+#### 2d. Determine the team name
+
+The iteration endpoint is team-scoped. The default team name is usually `{project} Team`. Confirm with the user or derive it:
+
+```bash
+TEAM="${PROJECT} Team"
+```
+
+#### 2e. Write `.ado-skills.json`
 
 ```bash
 jq -n \
@@ -110,12 +151,14 @@ jq -n \
   --arg proc    "$PROCESS" \
   --arg repo    "$REPOSITORY_URL" \
   --arg area    "$AREA_PATH" \
+  --arg team    "$TEAM" \
   '{
     organizationUrl: $org,
     project:         $proj,
     process:         $proc,
     repositoryUrl:   $repo,
-    areaPath:        $area
+    areaPath:        $area,
+    team:            $team
   }' > "$CONFIG_FILE"
 ```
 
@@ -123,13 +166,15 @@ Tell the user to commit `.ado-skills.json` so teammates and CI agents share the 
 
 ### 3. Resolve iteration path (from today's date)
 
-ADO exposes "which iteration contains today" directly, so no date math is needed — and this is the one value we always compute fresh:
+Fetch the current iteration for the team. ADO determines which iteration contains today — no date math needed:
 
 ```bash
-ITERATION_PATH=$(az boards iteration project list \
-  --org "$ORG" --project "$PROJECT" \
-  --timeframe current \
-  --query "[0].path" -o tsv)
+TEAM_ENCODED=$(printf '%s' "$TEAM" | jq -sRr @uri)
+
+ITERATION_PATH=$(curl -s \
+  -H "Authorization: Basic $AUTH" \
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/$TEAM_ENCODED/_apis/work/teamsettings/iterations?\$timeframe=current&api-version=7.1" \
+  | jq -r '.value[0].path // empty')
 ```
 
 If nothing comes back — no sprint configured for today, or a gap between sprints — fall back to the project default iteration and warn the user:
@@ -154,4 +199,5 @@ PROCESS:        Scrum
 REPOSITORY_URL: https://dev.azure.com/contoso/My Project/_git/my-repo
 AREA_PATH:      My Project\Squad A
 ITERATION_PATH: My Project\Sprint 42
+TEAM:           My Project Team
 ```

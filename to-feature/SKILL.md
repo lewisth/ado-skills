@@ -23,9 +23,14 @@ Run the `ado-context` skill first. It loads `.ado-skills.json` (or runs a one-ti
 - `PROCESS` — process template (affects story type names used downstream by `to-pbis`)
 - `REPOSITORY_URL` — the canonical repo URL; append it to the PRD so the downstream agent works on the right code
 - `AREA_PATH` — loaded from `.ado-skills.json`
-- `ITERATION_PATH` — the iteration containing today's date (via `--timeframe current`)
+- `ITERATION_PATH` — the iteration containing today's date
 
-Every field below assumes those variables are already in scope.
+Every field below assumes those variables are already in scope, and that `AUTH` and `PROJECT_ENCODED` are set:
+
+```bash
+AUTH=$(printf ':%s' "$AZURE_DEVOPS_PAT" | base64)
+PROJECT_ENCODED=$(printf '%s' "$PROJECT" | jq -sRr @uri)
+```
 
 ## Process
 
@@ -46,7 +51,7 @@ Briefly check with the user:
 
 Write the PRD using the template below. The **entire PRD** becomes the Feature's **Description** field (`System.Description`). Do NOT ask for review first — create it.
 
-Azure DevOps supports Markdown on large text fields (`System.Description`, `Microsoft.VSTS.Common.AcceptanceCriteria`, etc.), but the format defaults to HTML. To store the PRD as Markdown you must also set `multilineFieldsFormat/System.Description = Markdown` in the same patch. The `az boards work-item` CLI doesn't expose this flag, so use `az rest` to hit the REST API directly.
+Azure DevOps supports Markdown on large text fields (`System.Description`, `Microsoft.VSTS.Common.AcceptanceCriteria`, etc.), but the format defaults to HTML. To store the PRD as Markdown you must also set `multilineFieldsFormat/System.Description = Markdown` in the same patch.
 
 Caveats:
 
@@ -71,11 +76,11 @@ PAYLOAD=$(jq -n \
   { op: "add", path: "/multilineFieldsFormat/System.Description",     value: "Markdown" }
 ]')
 
-ITEM=$(az rest \
-  --method POST \
-  --uri "https://dev.azure.com/$ORG_NAME/$PROJECT/_apis/wit/workitems/\$Feature?api-version=7.1" \
-  --headers "Content-Type=application/json-patch+json" \
-  --body "$PAYLOAD")
+ITEM=$(curl -s -X POST \
+  -H "Authorization: Basic $AUTH" \
+  -H "Content-Type: application/json-patch+json" \
+  -d "$PAYLOAD" \
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/\$Feature?api-version=7.1")
 
 FEATURE_ID=$(echo "$ITEM" | jq '.id')
 echo "https://dev.azure.com/$ORG_NAME/$PROJECT/_workitems/edit/$FEATURE_ID"
@@ -86,11 +91,10 @@ echo "https://dev.azure.com/$ORG_NAME/$PROJECT/_workitems/edit/$FEATURE_ID"
 Confirm the PRD landed in `System.Description` with the right format before handing off:
 
 ```bash
-az boards work-item show \
-  --org $ORG \
-  --id $FEATURE_ID \
-  --query "fields.\"System.Description\"" \
-  -o tsv
+curl -s \
+  -H "Authorization: Basic $AUTH" \
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.1" \
+  | jq -r '.fields["System.Description"]'
 ```
 
 If the description is empty, patch it:
@@ -101,11 +105,11 @@ PATCH=$(jq -n --arg md "$PRD_MD" '[
   { op: "add", path: "/multilineFieldsFormat/System.Description", value: "Markdown" }
 ]')
 
-az rest \
-  --method PATCH \
-  --uri "https://dev.azure.com/$ORG_NAME/$PROJECT/_apis/wit/workitems/$FEATURE_ID?api-version=7.1" \
-  --headers "Content-Type=application/json-patch+json" \
-  --body "$PATCH"
+curl -s -X PATCH \
+  -H "Authorization: Basic $AUTH" \
+  -H "Content-Type: application/json-patch+json" \
+  -d "$PATCH" \
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.1"
 ```
 
 If the initial create failed with an error about `multilineFieldsFormat` being unknown, the org hasn't enabled Markdown for work items. Retry without the `multilineFieldsFormat` op and convert the PRD to HTML first (e.g. `pandoc -f gfm -t html`).

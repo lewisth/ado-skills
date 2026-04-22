@@ -2,12 +2,15 @@
 
 A collection of skills for working with repositories in Azure DevOps. 
 
-All ADO skills detect your org, project, and process template automatically from `git remote`. They require the [Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) with the DevOps extension:
+All ADO skills detect your org, project, and process template automatically from `git remote`. They use the **Azure DevOps REST API** directly via `curl` — no Azure CLI extension required.
+
+The only prerequisite is a Personal Access Token (PAT) with **Read** scope on Project and **Read & Write** scope on Work Items:
 
 ```bash
-az extension add --name azure-devops
-az login
+export AZURE_DEVOPS_PAT=your-pat-here
 ```
+
+Add it to your shell profile or CI environment so it's always available.
 
 Org, project, process template, repository URL, and area path are all **static per repo** — so `ado-context` runs a one-time setup that persists them to `.ado-skills.json`, and every subsequent invocation just reads the file. The iteration path is the only thing computed fresh each run, from today's date.
 
@@ -19,13 +22,14 @@ Example `.ado-skills.json` (commit this so your team and any CI agents share the
   "project": "My Project",
   "process": "Scrum",
   "repositoryUrl": "https://dev.azure.com/contoso/My Project/_git/my-repo",
-  "areaPath": "My Project\\Squad A"
+  "areaPath": "My Project\\Squad A",
+  "team": "My Project Team"
 }
 ```
 
 - **Repository URL** — embedded in every Feature PRD and PBI description so downstream agents check out the right code.
 - **Area path** — persisted once; change by editing `.ado-skills.json`.
-- **Iteration path** — computed from today's date via `az boards iteration project list --timeframe current`, with the project default as a fallback.
+- **Iteration path** — computed from today's date via the team iterations REST API (`$timeframe=current`), with the project default as a fallback.
 
 ## Workflow
 
@@ -85,11 +89,12 @@ npx skills@latest add lewisth/ado-skills --skill to-pbis
 |--------|-------------|
 | Issues | Work Items (Bug, User Story, PBI, Requirement, Task) |
 | Labels | Tags + Work Item Type + State |
-| Issue comments | Work item discussions (`--discussion`) |
-| "Blocked by" text | Predecessor/Successor relations |
-| `gh issue create` | `az boards work-item create` |
-| `gh issue list` | `az boards query --wiql` |
-| `gh pr create` | `az repos pr create` |
+| Issue comments | Work item discussions |
+| "Blocked by" text | Predecessor/Successor relations (`System.LinkTypes.Dependency`) |
+| Parent/child | Hierarchy relations (`System.LinkTypes.Hierarchy`) |
+| `gh issue create` | `POST /wit/workitems/$Type` |
+| `gh issue list` | `POST /wit/wiql` |
+| `gh pr create` | `POST /repos/pullrequests` |
 
 ---
 

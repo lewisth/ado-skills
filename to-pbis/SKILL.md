@@ -29,18 +29,25 @@ Run the `ado-context` skill first. It loads `.ado-skills.json` (or runs a one-ti
 - `PROCESS` — process template; use it to pick the right story type (User Story / Product Backlog Item / Requirement)
 - `REPOSITORY_URL` — the canonical repo URL; include it in each PBI description so the downstream agent works on the right code
 - `AREA_PATH` — loaded from `.ado-skills.json`
-- `ITERATION_PATH` — the iteration containing today's date (via `--timeframe current`)
+- `ITERATION_PATH` — the iteration containing today's date
 
-Every field below assumes those variables are already in scope.
+Every field below assumes those variables are already in scope, and that `AUTH` and `PROJECT_ENCODED` are set:
+
+```bash
+AUTH=$(printf ':%s' "$AZURE_DEVOPS_PAT" | base64)
+PROJECT_ENCODED=$(printf '%s' "$PROJECT" | jq -sRr @uri)
+```
 
 ## Process
 
 ### 1. Resolve the parent Feature
 
-The parent Feature ID should come from the user (typically just produced by `to-feature`). If they don't supply one, ask. Fetch it:
+The parent Feature ID should come from the user (typically just produced by `to-feature`). If they don't supply one, ask. Fetch its details:
 
 ```bash
-az boards work-item show --org $ORG --id $FEATURE_ID --output json
+curl -s \
+  -H "Authorization: Basic $AUTH" \
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID?api-version=7.1"
 ```
 
 Use its PRD description as the primary source material.
@@ -91,18 +98,10 @@ Apply a tag to each PBI based on its classification:
 - **AFK** slices → `ready-for-agent`
 - **HITL** slices → `ready-for-human`
 
-For each approved slice:
+For each approved slice, build the description and create the work item:
 
 ```bash
-ITEM=$(az boards work-item create \
-  --org $ORG \
-  --project "$PROJECT" \
-  --type "$STORY_TYPE" \
-  --title "Slice title" \
-  --area "$AREA_PATH" \
-  --iteration "$ITERATION_PATH" \
-  --tags "ready-for-agent" \
-  --description "$(cat <<EOF
+DESCRIPTION=$(cat <<EOF
 ## Repository
 
 $REPOSITORY_URL
@@ -120,30 +119,76 @@ A concise description of this vertical slice. End-to-end behavior, not layer-by-
 
 #<work-item-id> (or "None — can start immediately")
 EOF
-)" \
-  --output json)
+)
 
-ITEM_ID=$(echo $ITEM | jq '.id')
+PAYLOAD=$(jq -n \
+  --arg title "Slice title" \
+  --arg area  "$AREA_PATH" \
+  --arg iter  "$ITERATION_PATH" \
+  --arg tags  "ready-for-agent" \
+  --arg desc  "$DESCRIPTION" \
+  '[
+    { op: "add", path: "/fields/System.Title",                          value: $title },
+    { op: "add", path: "/fields/System.AreaPath",                       value: $area },
+    { op: "add", path: "/fields/System.IterationPath",                  value: $iter },
+    { op: "add", path: "/fields/System.Tags",                           value: $tags },
+    { op: "add", path: "/fields/System.Description",                    value: $desc },
+    { op: "add", path: "/multilineFieldsFormat/System.Description",     value: "Markdown" }
+  ]')
+
+STORY_TYPE_ENCODED=$(printf '%s' "$STORY_TYPE" | jq -sRr @uri)
+
+ITEM=$(curl -s -X POST \
+  -H "Authorization: Basic $AUTH" \
+  -H "Content-Type: application/json-patch+json" \
+  -d "$PAYLOAD" \
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/\$$STORY_TYPE_ENCODED?api-version=7.1")
+
+ITEM_ID=$(echo "$ITEM" | jq '.id')
 ```
 
-Link each PBI as a **child** of the parent Feature:
+Link each PBI as a **child** of the parent Feature. The relation type `System.LinkTypes.Hierarchy-Reverse` means "the target is my parent":
 
 ```bash
-az boards work-item relation add \
-  --org $ORG \
-  --id $ITEM_ID \
-  --relation-type "Parent" \
-  --target-id $FEATURE_ID
+PARENT_PAYLOAD=$(jq -n \
+  --arg feature_url "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$FEATURE_ID" \
+  '[{
+    op: "add",
+    path: "/relations/-",
+    value: {
+      rel: "System.LinkTypes.Hierarchy-Reverse",
+      url: $feature_url,
+      attributes: { comment: "" }
+    }
+  }]')
+
+curl -s -X PATCH \
+  -H "Authorization: Basic $AUTH" \
+  -H "Content-Type: application/json-patch+json" \
+  -d "$PARENT_PAYLOAD" \
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$ITEM_ID?api-version=7.1"
 ```
 
-Link blocking relationships between PBIs as predecessors:
+Link blocking relationships between PBIs. The relation type `System.LinkTypes.Dependency-Forward` means "the target is my predecessor" (I am blocked by the target):
 
 ```bash
-az boards work-item relation add \
-  --org $ORG \
-  --id $ITEM_ID \
-  --relation-type "Predecessor" \
-  --target-id $BLOCKER_ID
+PREDECESSOR_PAYLOAD=$(jq -n \
+  --arg blocker_url "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$BLOCKER_ID" \
+  '[{
+    op: "add",
+    path: "/relations/-",
+    value: {
+      rel: "System.LinkTypes.Dependency-Forward",
+      url: $blocker_url,
+      attributes: { comment: "" }
+    }
+  }]')
+
+curl -s -X PATCH \
+  -H "Authorization: Basic $AUTH" \
+  -H "Content-Type: application/json-patch+json" \
+  -d "$PREDECESSOR_PAYLOAD" \
+  "https://dev.azure.com/$ORG_NAME/$PROJECT_ENCODED/_apis/wit/workitems/$ITEM_ID?api-version=7.1"
 ```
 
 ### 6. Report out
