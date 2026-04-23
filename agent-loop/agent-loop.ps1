@@ -31,7 +31,7 @@
   Max agent invocations per PBI (default: 5)
 
 .PARAMETER Provider
-  AI provider: claude-code or cursor-cli
+  AI provider: claude-code, cursor, or cursor-cli
 
 .PARAMETER Model
   Model ID to use (e.g. claude-opus-4-6)
@@ -45,8 +45,11 @@
 .NOTES
   Required environment variables:
     AZURE_DEVOPS_PAT     — Azure DevOps Personal Access Token
-    ANTHROPIC_API_KEY    — Required when -Provider is claude-code
-    CURSOR_API_KEY       — Required when -Provider is cursor-cli
+    ANTHROPIC_API_KEY    — Optional when -Provider is claude-code;
+                           if set, Claude Code uses API-key auth instead of
+                           the signed-in Claude session
+    CURSOR_API_KEY       — Optional when -Provider is cursor/cursor-cli;
+                           if omitted, the signed-in Cursor session is used
 #>
 
 [CmdletBinding()]
@@ -85,7 +88,33 @@ function log_warn {
 function log_error {
     param([string]$Message)
     $ts = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')
-    Write-Error "[$ts] [ERROR] $Message"
+    # Keep error logs non-terminating so callers can decide whether to throw,
+    # retry, tag a PBI as failed, or continue to cleanup.
+    Write-Error "[$ts] [ERROR] $Message" -ErrorAction Continue
+}
+
+function Format-CommandArgument {
+    param([string]$Value)
+
+    if ($null -eq $Value) {
+        return "''"
+    }
+
+    if ($Value -match '[\s"`$]') {
+        return '"' + ($Value -replace '"', '\"') + '"'
+    }
+
+    return $Value
+}
+
+function Write-CommandLog {
+    param(
+        [string]$Prefix,
+        [string[]]$Arguments
+    )
+
+    $formatted = @($Arguments | ForEach-Object { Format-CommandArgument $_ }) -join ' '
+    log_info "$Prefix $formatted"
 }
 
 function Get-DefaultSystemLogDirectory {
@@ -106,37 +135,68 @@ function Get-DefaultSystemLogDirectory {
 }
 
 # ── Load config file ──────────────────────────────────────────────────
-# Resolve working directory: param > env > current directory
-$resolvedWorkingDir = if ($WorkingDirectory) {
+# Config can live alongside this script and/or in the target repo working directory.
+$configDirectory = if ($PSScriptRoot) {
+    $PSScriptRoot
+} else {
+    (Get-Location).Path
+}
+
+$fileConfig = @{}
+
+function Import-ConfigFile {
+    param(
+        [string]$ConfigFilePath,
+        [hashtable]$Config
+    )
+
+    if (-not (Test-Path $ConfigFilePath)) {
+        return
+    }
+
+    try {
+        $json = Get-Content $ConfigFilePath -Raw | ConvertFrom-Json
+        if ($null -ne $json.organizationUrl) { $Config['Org']              = $json.organizationUrl }
+        if ($null -ne $json.project)         { $Config['Project']          = $json.project }
+        if ($null -ne $json.areaPath)        { $Config['AreaPath']         = $json.areaPath }
+        if ($null -ne $json.team)            { $Config['Team']             = $json.team }
+        if ($null -ne $json.process)         { $Config['Process']          = $json.process }
+        if ($null -ne $json.repositoryUrl)   { $Config['RepoUrl']          = $json.repositoryUrl }
+        if ($null -ne $json.baseBranch)      { $Config['BaseBranch']       = $json.baseBranch }
+        if ($null -ne $json.maxIterationsPerPbi) { $Config['MaxIterations'] = $json.maxIterationsPerPbi }
+        if ($null -ne $json.provider)        { $Config['Provider']         = $json.provider }
+        if ($null -ne $json.model)           { $Config['Model']            = $json.model }
+        if ($null -ne $json.workingDirectory) { $Config['WorkingDirectory'] = $json.workingDirectory }
+        if ($null -ne $json.systemLogDirectory) { $Config['SystemLogDirectory'] = $json.systemLogDirectory }
+        if ($null -ne $json.featureId)       { $Config['FeatureId']        = [string]$json.featureId }
+    } catch {
+        Write-Error "Error: Failed to parse ${ConfigFilePath}: $_"
+        exit 1
+    }
+}
+
+$scriptConfigFile = Join-Path $configDirectory '.agent-loop.json'
+Import-ConfigFile -ConfigFilePath $scriptConfigFile -Config $fileConfig
+
+$candidateWorkingDir = if ($WorkingDirectory) {
     $WorkingDirectory
+} elseif ($fileConfig.ContainsKey('WorkingDirectory') -and $fileConfig['WorkingDirectory']) {
+    $fileConfig['WorkingDirectory']
 } elseif ($env:AGENT_LOOP_WORKING_DIRECTORY) {
     $env:AGENT_LOOP_WORKING_DIRECTORY
 } else {
     (Get-Location).Path
 }
 
-$configFile = Join-Path $resolvedWorkingDir '.agent-loop.json'
-$fileConfig = @{}
+if ($candidateWorkingDir) {
+    $workingConfigFile = Join-Path $candidateWorkingDir '.agent-loop.json'
+    $sameConfigFile = [System.StringComparer]::OrdinalIgnoreCase.Equals(
+        [System.IO.Path]::GetFullPath($scriptConfigFile),
+        [System.IO.Path]::GetFullPath($workingConfigFile)
+    )
 
-if (Test-Path $configFile) {
-    try {
-        $json = Get-Content $configFile -Raw | ConvertFrom-Json
-        if ($null -ne $json.organizationUrl) { $fileConfig['Org']              = $json.organizationUrl }
-        if ($null -ne $json.project)         { $fileConfig['Project']          = $json.project }
-        if ($null -ne $json.areaPath)        { $fileConfig['AreaPath']         = $json.areaPath }
-        if ($null -ne $json.team)            { $fileConfig['Team']             = $json.team }
-        if ($null -ne $json.process)         { $fileConfig['Process']          = $json.process }
-        if ($null -ne $json.repositoryUrl)   { $fileConfig['RepoUrl']          = $json.repositoryUrl }
-        if ($null -ne $json.baseBranch)      { $fileConfig['BaseBranch']       = $json.baseBranch }
-        if ($null -ne $json.maxIterationsPerPbi) { $fileConfig['MaxIterations'] = $json.maxIterationsPerPbi }
-        if ($null -ne $json.provider)        { $fileConfig['Provider']         = $json.provider }
-        if ($null -ne $json.model)           { $fileConfig['Model']            = $json.model }
-        if ($null -ne $json.workingDirectory) { $fileConfig['WorkingDirectory'] = $json.workingDirectory }
-        if ($null -ne $json.systemLogDirectory) { $fileConfig['SystemLogDirectory'] = $json.systemLogDirectory }
-        if ($null -ne $json.featureId)       { $fileConfig['FeatureId']        = [string]$json.featureId }
-    } catch {
-        Write-Error "Error: Failed to parse ${configFile}: $_"
-        exit 1
+    if (-not $sameConfigFile) {
+        Import-ConfigFile -ConfigFilePath $workingConfigFile -Config $fileConfig
     }
 }
 
@@ -148,6 +208,44 @@ function Resolve-Value {
     return $default
 }
 
+function Resolve-ProviderName {
+    param([string]$ProviderValue)
+
+    if (-not $ProviderValue) {
+        return $ProviderValue
+    }
+
+    switch ($ProviderValue.Trim().ToLowerInvariant()) {
+        'cursor' { return 'cursor-cli' }
+        'cursor-cli' { return 'cursor-cli' }
+        'claude-code' { return 'claude-code' }
+        default { return $ProviderValue }
+    }
+}
+
+function Resolve-CursorModel {
+    param(
+        [string]$ProviderValue,
+        [string]$ModelValue
+    )
+
+    if ($ProviderValue -ne 'cursor-cli' -or -not $ModelValue) {
+        return $ModelValue
+    }
+
+    $cursorModelAliases = @{
+        'claude-opus-4-6' = 'claude-4.6-opus-high-thinking'
+    }
+
+    if ($cursorModelAliases.ContainsKey($ModelValue)) {
+        $normalizedModel = $cursorModelAliases[$ModelValue]
+        log_info "Normalizing Cursor model '$ModelValue' to '$normalizedModel'."
+        return $normalizedModel
+    }
+
+    return $ModelValue
+}
+
 $resolvedOrg            = Resolve-Value $Org           'Org'
 $resolvedProject        = Resolve-Value $Project       'Project'
 $resolvedAreaPath       = Resolve-Value $AreaPath      'AreaPath'
@@ -156,14 +254,21 @@ $resolvedProcess        = Resolve-Value $Process       'Process'
 $resolvedRepoUrl        = Resolve-Value $RepoUrl       'RepoUrl'
 $resolvedBaseBranch     = Resolve-Value $BaseBranch    'BaseBranch'    $null
 $resolvedMaxIterations  = Resolve-Value $MaxIterations 'MaxIterations' 5
-$resolvedProvider       = Resolve-Value $Provider      'Provider'
+$resolvedProvider       = Resolve-ProviderName (Resolve-Value $Provider 'Provider')
 $resolvedModel          = Resolve-Value $Model         'Model'
 $resolvedFeatureId      = Resolve-Value $FeatureId     'FeatureId'
 $resolvedSystemLogDir   = Resolve-Value $SystemLogDirectory 'SystemLogDirectory'
-
-if (-not $WorkingDirectory -and -not $env:AGENT_LOOP_WORKING_DIRECTORY -and $fileConfig.ContainsKey('WorkingDirectory') -and $fileConfig['WorkingDirectory']) {
-    $resolvedWorkingDir = $fileConfig['WorkingDirectory']
+$resolvedWorkingDir     = if ($WorkingDirectory) {
+    $WorkingDirectory
+} elseif ($fileConfig.ContainsKey('WorkingDirectory') -and $fileConfig['WorkingDirectory']) {
+    $fileConfig['WorkingDirectory']
+} elseif ($env:AGENT_LOOP_WORKING_DIRECTORY) {
+    $env:AGENT_LOOP_WORKING_DIRECTORY
+} else {
+    (Get-Location).Path
 }
+
+$resolvedModel = Resolve-CursorModel $resolvedProvider $resolvedModel
 
 if (-not $resolvedSystemLogDir) {
     $resolvedSystemLogDir = if ($env:AGENT_LOOP_SYSTEM_LOG_DIR) { $env:AGENT_LOOP_SYSTEM_LOG_DIR } else { Get-DefaultSystemLogDirectory }
@@ -174,7 +279,7 @@ $errors = [System.Collections.Generic.List[string]]::new()
 
 if (-not $resolvedOrg)      { $errors.Add('Missing required value: -Org (Azure DevOps org URL)') }
 if (-not $resolvedProject)  { $errors.Add('Missing required value: -Project (Azure DevOps project name)') }
-if (-not $resolvedProvider) { $errors.Add('Missing required value: -Provider (claude-code or cursor-cli)') }
+if (-not $resolvedProvider) { $errors.Add('Missing required value: -Provider (claude-code, cursor, or cursor-cli)') }
 
 if ($errors.Count -gt 0) {
     Write-Host 'Error: Configuration is incomplete:' -ForegroundColor Red
@@ -182,14 +287,14 @@ if ($errors.Count -gt 0) {
         Write-Host "  - $err" -ForegroundColor Red
     }
     Write-Host ''
-    Write-Host 'Provide values via CLI parameters or .agent-loop.json in the working directory.' -ForegroundColor Yellow
+    Write-Host 'Provide values via CLI parameters or .agent-loop.json next to the script and/or in the working directory.' -ForegroundColor Yellow
     Write-Host 'See .agent-loop.example.json for the full schema.' -ForegroundColor Yellow
     exit 1
 }
 
 # ── Validate provider value ───────────────────────────────────────────
 if ($resolvedProvider -notin @('claude-code', 'cursor-cli')) {
-    Write-Host "Error: Invalid provider '$resolvedProvider'. Must be 'claude-code' or 'cursor-cli'." -ForegroundColor Red
+    Write-Host "Error: Invalid provider '$resolvedProvider'. Must be 'claude-code', 'cursor', or 'cursor-cli'." -ForegroundColor Red
     exit 1
 }
 
@@ -218,12 +323,18 @@ if (-not $env:AZURE_DEVOPS_PAT) {
     $envErrors.Add('Missing required environment variable: AZURE_DEVOPS_PAT')
 }
 
-if ($resolvedProvider -eq 'claude-code' -and -not $env:ANTHROPIC_API_KEY) {
-    $envErrors.Add('Missing required environment variable: ANTHROPIC_API_KEY (required for provider=claude-code)')
+if ($resolvedProvider -eq 'claude-code') {
+    if ($env:ANTHROPIC_API_KEY) {
+        log_warn 'ANTHROPIC_API_KEY is set; Claude Code will use API-key auth instead of the signed-in Claude session.'
+    } elseif ($env:CLAUDE_CODE_OAUTH_TOKEN) {
+        log_info 'CLAUDE_CODE_OAUTH_TOKEN detected; Claude Code will use OAuth token auth.'
+    } else {
+        log_info 'Claude Code will use the signed-in Claude session. Run `claude` and complete login first if needed.'
+    }
 }
 
 if ($resolvedProvider -eq 'cursor-cli' -and -not $env:CURSOR_API_KEY) {
-    $envErrors.Add('Missing required environment variable: CURSOR_API_KEY (required for provider=cursor-cli)')
+    log_info 'CURSOR_API_KEY not set; Cursor Agent will use the signed-in Cursor session.'
 }
 
 if ($envErrors.Count -gt 0) {
@@ -336,7 +447,7 @@ function Start-FeatureLog {
         "Feature Title: $FeatureTitle"
         "Started At (UTC): $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss'))"
         "Working Directory: $resolvedWorkingDir"
-        "Provider: $resolvedProvider$((if ($resolvedModel) { " ($resolvedModel)" } else { '' }))"
+        "Provider: $resolvedProvider$(if ($resolvedModel) { " ($resolvedModel)" } else { '' })"
         ''
     ) | Set-Content -Path $script:currentFeatureLogFile
     log_info "Persistent agent log: $($script:currentFeatureLogFile)"
@@ -379,7 +490,15 @@ function Invoke-AdoApi {
         'Authorization' = Get-AdoAuthHeader
         'Content-Type'  = $ContentType
     }
+    $previousProgressPreference = $ProgressPreference
+    $ProgressPreference = 'SilentlyContinue'
     try {
+        if ($Body) {
+            log_info "ADO request: Invoke-RestMethod -Method $Method -Uri '$Url' -ContentType '$ContentType' -Body $Body"
+        } else {
+            log_info "ADO request: Invoke-RestMethod -Method $Method -Uri '$Url' -ContentType '$ContentType'"
+        }
+
         if ($Body) {
             return Invoke-RestMethod -Method $Method -Uri $Url -Headers $headers -Body $Body
         } else {
@@ -391,7 +510,28 @@ function Invoke-AdoApi {
         log_error "ADO API error: HTTP $statusCode — $Method $Url"
         log_error "Response: $errorBody"
         throw
+    } finally {
+        $ProgressPreference = $previousProgressPreference
     }
+}
+
+function Get-WorkItemFieldValue {
+    param(
+        $Fields,
+        [string] $FieldName,
+        $DefaultValue = ''
+    )
+
+    if ($null -eq $Fields) {
+        return $DefaultValue
+    }
+
+    $property = $Fields.PSObject.Properties[$FieldName]
+    if ($null -eq $property -or $null -eq $property.Value) {
+        return $DefaultValue
+    }
+
+    return $property.Value
 }
 
 # Queries ADO for Features that have at least one child PBI tagged
@@ -461,10 +601,11 @@ function Get-WorkItem {
 
 # Transitions a work item to the given state.
 # Returns the "in progress" state name for the configured process template.
-# Scrum → "In Progress"; Agile/CMMI → "Active"; unknown → "In Progress".
+# Scrum PBIs → "Committed"; Agile/CMMI PBIs → "Active"; unknown → "In Progress".
 function Get-InProgressState {
     switch ($resolvedProcess) {
-        { $_ -in @('Agile', 'CMMI') } { return 'Active' }
+        'Scrum'                        { return 'Committed' }
+        { $_ -in @('Agile', 'CMMI') }  { return 'Active' }
         default                        { return 'In Progress' }
     }
 }
@@ -477,12 +618,31 @@ function Update-WorkItemState {
         [string] $WorkItemId,
         [string] $State
     )
-    $patchDoc = @(
+    $currentWorkItem = Get-WorkItem -WorkItemId $WorkItemId
+    $currentState = Get-WorkItemFieldValue -Fields $currentWorkItem.fields -FieldName 'System.State' -DefaultValue ''
+    if ($currentState -eq $State) {
+        log_info "Work item $WorkItemId is already in state '$State'"
+        return
+    }
+
+    $patchDoc = ConvertTo-Json -InputObject @(
         @{ op = 'replace'; path = '/fields/System.State'; value = $State }
-    ) | ConvertTo-Json -Compress
+    ) -Compress
     $url = "$resolvedOrg/$resolvedProject/_apis/wit/workitems/${WorkItemId}?api-version=7.1"
-    Invoke-AdoApi -Method PATCH -Url $url -Body $patchDoc -ContentType 'application/json-patch+json' | Out-Null
-    log_info "Work item $WorkItemId state set to '$State'"
+
+    try {
+        Invoke-AdoApi -Method PATCH -Url $url -Body $patchDoc -ContentType 'application/json-patch+json' | Out-Null
+        log_info "Work item $WorkItemId state set to '$State'"
+    } catch {
+        $refreshedWorkItem = Get-WorkItem -WorkItemId $WorkItemId
+        $refreshedState = Get-WorkItemFieldValue -Fields $refreshedWorkItem.fields -FieldName 'System.State' -DefaultValue ''
+        if ($refreshedState -eq $State) {
+            log_warn "Work item $WorkItemId was updated to '$State' by another process; continuing"
+            return
+        }
+
+        throw
+    }
 }
 
 # Appends a tag to a work item without removing existing tags.
@@ -494,7 +654,7 @@ function Add-WorkItemTag {
     )
     # Fetch current tags so we can append rather than overwrite.
     $workItem    = Get-WorkItem -WorkItemId $WorkItemId
-    $currentTags = $workItem.fields.'System.Tags'
+    $currentTags = Get-WorkItemFieldValue -Fields $workItem.fields -FieldName 'System.Tags' -DefaultValue ''
     $tagList     = if ($currentTags) { @($currentTags -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } else { @() }
     if ($tagList -contains $Tag) {
         log_info "Tag '$Tag' already present on work item $WorkItemId"
@@ -503,9 +663,9 @@ function Add-WorkItemTag {
     $newTags     = if ($currentTags) { "$currentTags; $Tag" } else { $Tag }
     $op          = if ($currentTags) { 'replace' } else { 'add' }
 
-    $patchDoc = @(
+    $patchDoc = ConvertTo-Json -InputObject @(
         @{ op = $op; path = '/fields/System.Tags'; value = $newTags }
-    ) | ConvertTo-Json -Compress
+    ) -Compress
     $url = "$resolvedOrg/$resolvedProject/_apis/wit/workitems/${WorkItemId}?api-version=7.1"
     Invoke-AdoApi -Method PATCH -Url $url -Body $patchDoc -ContentType 'application/json-patch+json' | Out-Null
     log_info "Tag '$Tag' appended to work item $WorkItemId"
@@ -524,18 +684,70 @@ function New-PullRequest {
         [object[]] $Pbis
     )
 
-    if (-not $resolvedRepoUrl) {
-        log_error "New-PullRequest: RepoUrl is not set — cannot determine repository for PR creation"
+    $repoUrlForPr = $resolvedRepoUrl
+
+    try {
+        Write-CommandLog -Prefix 'Running:' -Arguments @('git', 'remote', 'get-url', 'origin')
+        $originRepoUrl = (git remote get-url origin 2>$null | Select-Object -First 1)
+        if ($LASTEXITCODE -eq 0 -and $originRepoUrl) {
+            $repoUrlForPr = $originRepoUrl.Trim()
+        }
+    } catch {
+        # Fall back to configured RepoUrl when git remote inspection fails.
+    }
+
+    if (-not $repoUrlForPr) {
+        log_error "New-PullRequest: RepoUrl is not set and origin remote could not be resolved"
         throw "RepoUrl is required for PR creation"
     }
 
-    # Extract repository name from RepoUrl (last path segment after /_git/).
-    $repoId = ($resolvedRepoUrl -split '/_git/')[-1] -replace '[/?].*', ''
-
-    if (-not $repoId) {
-        log_error "New-PullRequest: unable to parse repository name from RepoUrl='$resolvedRepoUrl'"
-        throw "Could not parse repository name from RepoUrl"
+    try {
+        $repoUri = [Uri]$repoUrlForPr
+    } catch {
+        log_error "New-PullRequest: RepoUrl '$repoUrlForPr' is not a valid absolute URI"
+        throw "Could not parse repository URL"
     }
+
+    $repoPathParts = @($repoUri.AbsolutePath.Trim('/') -split '/')
+    if ($repoPathParts.Count -lt 4 -or $repoPathParts[2] -ne '_git') {
+        log_error "New-PullRequest: unable to parse repository project/name from RepoUrl='$repoUrlForPr'"
+        throw "Could not parse repository project/name from RepoUrl"
+    }
+
+    $repoProject    = $repoPathParts[1]
+    $repoNameFromUrl = $repoPathParts[3]
+
+    if (-not $repoProject -or -not $repoNameFromUrl) {
+        log_error "New-PullRequest: parsed invalid repository context from RepoUrl='$repoUrlForPr'"
+        throw "Could not parse repository context from RepoUrl"
+    }
+
+    $repoProjectEscaped = [Uri]::EscapeDataString($repoProject)
+    $repoNameCandidates = @(
+        $repoNameFromUrl
+        ($repoNameFromUrl -replace '\.git$', '')
+    ) | Where-Object { $_ } | Select-Object -Unique
+
+    $repoListUrl = "$resolvedOrg/$repoProjectEscaped/_apis/git/repositories?api-version=7.1"
+    $repoList    = @(Invoke-AdoApi -Method GET -Url $repoListUrl).value
+    $repo        = $repoList | Where-Object {
+        $candidateNames = @(
+            [string]$_.name
+            (([string]$_.name) -replace '\.git$', '')
+        ) | Where-Object { $_ } | Select-Object -Unique
+
+        @($candidateNames | Where-Object { $repoNameCandidates -contains $_ }).Count -gt 0
+    } | Select-Object -First 1
+
+    if (-not $repo) {
+        log_error "New-PullRequest: unable to resolve repository metadata for RepoUrl='$repoUrlForPr'"
+        throw "Could not resolve repository metadata from RepoUrl"
+    }
+
+    $repoId         = [string]$repo.id
+    $repoName       = [string]$repo.name
+    $repoIdEscaped  = [Uri]::EscapeDataString($repoId)
+    $repoNameEscaped = [Uri]::EscapeDataString($repoName)
 
     # Build PR description listing all PBI IDs and titles.
     $descLines   = $Pbis | ForEach-Object { "- #$($_.id): $($_.fields.'System.Title')" }
@@ -552,11 +764,11 @@ function New-PullRequest {
         workItemRefs  = $workItemRefs
     } | ConvertTo-Json -Depth 5 -Compress
 
-    $url      = "$resolvedOrg/$resolvedProject/_apis/git/repositories/$repoId/pullrequests?api-version=7.1"
+    $url      = "$resolvedOrg/$repoProjectEscaped/_apis/git/repositories/$repoIdEscaped/pullrequests?api-version=7.1"
     $response = Invoke-AdoApi -Method POST -Url $url -Body $body
 
     $prId     = $response.pullRequestId
-    $prWebUrl = "$resolvedOrg/$resolvedProject/_git/$repoId/pullrequest/$prId"
+    $prWebUrl = "$resolvedOrg/$repoProjectEscaped/_git/$repoNameEscaped/pullrequest/$prId"
     log_info "Pull request #${prId} created: $prWebUrl"
     return $prWebUrl
 }
@@ -652,6 +864,7 @@ function Get-DefaultBranch {
         return $resolvedBaseBranch
     }
 
+    Write-CommandLog -Prefix 'Running:' -Arguments @('git', 'symbolic-ref', 'refs/remotes/origin/HEAD')
     $ref = git symbolic-ref refs/remotes/origin/HEAD 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $ref) {
         $msg = "Get-DefaultBranch: cannot determine default branch — set baseBranch in config or -BaseBranch"
@@ -692,6 +905,7 @@ function New-FeatureBranch {
 
     log_info "Creating branch '$branchName' from '$baseBranch'"
 
+    Write-CommandLog -Prefix 'Running:' -Arguments @('git', 'fetch', 'origin', $baseBranch)
     git fetch origin $baseBranch 2>&1 | ForEach-Object { log_info "git: $_" }
     if ($LASTEXITCODE -ne 0) {
         $msg = "New-FeatureBranch: failed to fetch '$baseBranch' from origin"
@@ -700,11 +914,14 @@ function New-FeatureBranch {
     }
 
     # Check if branch already exists locally.
+    Write-CommandLog -Prefix 'Running:' -Arguments @('git', 'show-ref', '--verify', '--quiet', "refs/heads/$branchName")
     git show-ref --verify --quiet "refs/heads/$branchName" 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) {
         log_info "Branch '$branchName' already exists locally — checking out"
+        Write-CommandLog -Prefix 'Running:' -Arguments @('git', 'checkout', $branchName)
         git checkout $branchName 2>&1 | ForEach-Object { log_info "git: $_" }
     } else {
+        Write-CommandLog -Prefix 'Running:' -Arguments @('git', 'checkout', '-b', $branchName, "origin/$baseBranch")
         git checkout -b $branchName "origin/$baseBranch" 2>&1 | ForEach-Object { log_info "git: $_" }
     }
     if ($LASTEXITCODE -ne 0) {
@@ -713,6 +930,7 @@ function New-FeatureBranch {
         throw $msg
     }
 
+    Write-CommandLog -Prefix 'Running:' -Arguments @('git', 'push', '-u', 'origin', $branchName)
     git push -u origin $branchName 2>&1 | ForEach-Object { log_info "git: $_" }
     if ($LASTEXITCODE -ne 0) {
         $msg = "New-FeatureBranch: failed to push '$branchName' to origin"
@@ -731,6 +949,7 @@ function New-FeatureBranch {
 function Test-CleanAndPushed {
     param([string] $FeatureBranch)
 
+    Write-CommandLog -Prefix 'Running:' -Arguments @('git', 'status', '--porcelain')
     $statusOutput = git status --porcelain 2>&1
     if ($statusOutput) {
         log_error "Test-CleanAndPushed: working tree is not clean — uncommitted changes detected"
@@ -739,8 +958,10 @@ function Test-CleanAndPushed {
     }
 
     # Fetch to make sure remote tracking ref is current.
+    Write-CommandLog -Prefix 'Running:' -Arguments @('git', 'fetch', 'origin', $FeatureBranch)
     git fetch origin $FeatureBranch 2>$null | Out-Null
 
+    Write-CommandLog -Prefix 'Running:' -Arguments @('git', 'log', "origin/${FeatureBranch}..HEAD", '--oneline')
     $unpushed = git log "origin/${FeatureBranch}..HEAD" --oneline 2>&1
     if ($unpushed) {
         log_error "Test-CleanAndPushed: there are unpushed commits on '$FeatureBranch':"
@@ -792,6 +1013,83 @@ Read the file ```.agent-context/feature.md``` in your working directory for addi
 "@
 }
 
+# Recursively checks raw or JSON-parsed agent output for the exact
+# AGENT_COMPLETE token on its own line.
+function Test-AgentCompletionValue {
+    param($Value)
+
+    if ($null -eq $Value) {
+        return $false
+    }
+
+    if ($Value -is [string]) {
+        return [regex]::IsMatch($Value, '(?m)^\s*AGENT_COMPLETE\s*$')
+    }
+
+    if ($Value -is [System.Collections.IDictionary]) {
+        foreach ($entry in $Value.GetEnumerator()) {
+            if (Test-AgentCompletionValue -Value $entry.Value) {
+                return $true
+            }
+        }
+
+        return $false
+    }
+
+    if (($Value -is [System.Collections.IEnumerable]) -and -not ($Value -is [string])) {
+        foreach ($item in $Value) {
+            if (Test-AgentCompletionValue -Value $item) {
+                return $true
+            }
+        }
+
+        return $false
+    }
+
+    foreach ($property in $Value.PSObject.Properties) {
+        if (Test-AgentCompletionValue -Value $property.Value) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+# Detects AGENT_COMPLETE in either raw text output or JSON output emitted by
+# Cursor/Claude CLIs when --output-format json is enabled.
+function Test-AgentCompleted {
+    param([string] $Output)
+
+    if (-not $Output) {
+        return $false
+    }
+
+    if (Test-AgentCompletionValue -Value $Output) {
+        return $true
+    }
+
+    $jsonCandidates = @($Output)
+    $jsonCandidates += @(
+        $Output -split '\r?\n' |
+            ForEach-Object { $_.Trim() } |
+            Where-Object { $_ }
+    )
+
+    foreach ($candidate in ($jsonCandidates | Select-Object -Unique)) {
+        try {
+            $parsed = $candidate | ConvertFrom-Json -Depth 100 -ErrorAction Stop
+        } catch {
+            continue
+        }
+
+        if (Test-AgentCompletionValue -Value $parsed) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 # Dispatches the configured AI provider with the given prompt and captures output.
 # Returns a hashtable with:
 #   ExitCode   — exit code from the agent process
@@ -820,8 +1118,14 @@ function Invoke-Agent {
             }
         }
         'cursor-cli' {
+            $modelArgs = if ($resolvedModel) { @('--model', $resolvedModel) } else { @() }
             try {
-                $output = & agent -p $Prompt --force --output-format json 2>&1 | Out-String
+                $output = & agent -p $Prompt `
+                    --force `
+                    --trust `
+                    --workspace $resolvedWorkingDir `
+                    --output-format json `
+                    @modelArgs 2>&1 | Out-String
                 $exitCode = $LASTEXITCODE
             } catch {
                 $output   = $_.Exception.Message
@@ -829,13 +1133,13 @@ function Invoke-Agent {
             }
         }
         default {
-            $msg = "Invoke-Agent: unknown provider '$resolvedProvider'. Must be 'claude-code' or 'cursor-cli'."
+            $msg = "Invoke-Agent: unknown provider '$resolvedProvider'. Must be 'claude-code', 'cursor', or 'cursor-cli'."
             log_error $msg
             throw $msg
         }
     }
 
-    $completed = $output -match '(?m)^AGENT_COMPLETE$'
+    $completed = Test-AgentCompleted -Output $output
 
     if ($exitCode -ne 0) {
         log_error "Invoke-Agent: agent exited with non-zero exit code $exitCode"
@@ -955,7 +1259,7 @@ try {
     }
 
     $featureTitle       = $featureJson.fields.'System.Title'
-    $featureDescription = $featureJson.fields.'System.Description'
+    $featureDescription = Get-WorkItemFieldValue -Fields $featureJson.fields -FieldName 'System.Description' -DefaultValue ''
 
     log_info "Processing Feature ${featureId}: $featureTitle"
     Start-FeatureLog -FeatureId $featureId -FeatureTitle $featureTitle
@@ -963,28 +1267,65 @@ try {
 
     # Step 5: Fetch all child PBIs
     log_info "Fetching child PBIs for Feature $featureId"
-    $pbis = @(Get-ChildPbis -FeatureId $featureId)
+    $allChildPbis = @(Get-ChildPbis -FeatureId $featureId)
 
-    # Filter to only PBIs tagged "ready-for-agent" in "New" state.
-    $pbis = @($pbis | Where-Object {
-        $tagList = if ($_.fields.'System.Tags') {
-            @($_.fields.'System.Tags' -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    # Track all ready-for-agent PBIs for feature-level completion/PR creation,
+    # then separately derive the subset still pending and runnable.
+    $runnableStates = @('New', (Get-InProgressState))
+    $readyForAgentPbis = @($allChildPbis | Where-Object {
+        $tags = Get-WorkItemFieldValue -Fields $_.fields -FieldName 'System.Tags' -DefaultValue ''
+        $tagList = if ($tags) {
+            @($tags -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
         } else {
             @()
         }
-        $state = $_.fields.'System.State'
-        (($tagList -contains 'ready-for-agent') -and ($state -eq 'New'))
+        ($tagList -contains 'ready-for-agent')
     })
 
-    if ($pbis.Count -eq 0) {
-        log_info "Feature $featureId has no eligible child PBIs (ready-for-agent + New) — nothing to do"
+    if ($readyForAgentPbis.Count -eq 0) {
+        log_info "Feature $featureId has no ready-for-agent child PBIs — nothing to do"
         exit 0
     }
-    log_info "Found $($pbis.Count) eligible PBI(s) for Feature $featureId"
 
-    # Step 6: Topologically sort PBIs by dependency
-    log_info "Sorting PBIs by dependency order"
-    $sortedPbis = @(Sort-PbisByDependency -Pbis $pbis)
+    $remainingReadyForAgentPbis = @($readyForAgentPbis | Where-Object {
+        $tags = Get-WorkItemFieldValue -Fields $_.fields -FieldName 'System.Tags' -DefaultValue ''
+        $tagList = if ($tags) {
+            @($tags -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        } else {
+            @()
+        }
+        (-not ($tagList -contains 'agent-done'))
+    })
+
+    $pbis = @($remainingReadyForAgentPbis | Where-Object {
+        $tags = Get-WorkItemFieldValue -Fields $_.fields -FieldName 'System.Tags' -DefaultValue ''
+        $tagList = if ($tags) {
+            @($tags -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        } else {
+            @()
+        }
+        $state = Get-WorkItemFieldValue -Fields $_.fields -FieldName 'System.State' -DefaultValue ''
+        (($tagList -contains 'ready-for-agent') -and (-not ($tagList -contains 'agent-done')) -and ($runnableStates -contains $state))
+    })
+
+    log_info "Sorting PR PBIs by dependency order"
+    $prPbis = @(Sort-PbisByDependency -Pbis $readyForAgentPbis)
+
+    if ($pbis.Count -eq 0) {
+        if ($remainingReadyForAgentPbis.Count -eq 0) {
+            log_info "All ready-for-agent PBIs are already tagged agent-done — continuing to pull request creation"
+            $sortedPbis = @()
+        } else {
+            log_info "Feature $featureId has no eligible child PBIs (ready-for-agent + not agent-done + runnable state) — nothing to do"
+            exit 0
+        }
+    } else {
+        log_info "Found $($pbis.Count) eligible PBI(s) for Feature $featureId"
+
+        # Step 6: Topologically sort PBIs by dependency
+        log_info "Sorting PBIs by dependency order"
+        $sortedPbis = @(Sort-PbisByDependency -Pbis $pbis)
+    }
 
     # Step 7: Create feature branch
     log_info "Creating feature branch for Feature $featureId"
@@ -999,8 +1340,8 @@ try {
     foreach ($pbi in $sortedPbis) {
         $pbiId          = [string]$pbi.id
         $pbiTitle       = $pbi.fields.'System.Title'
-        $pbiDescription = $pbi.fields.'System.Description'
-        $pbiAc          = $pbi.fields.'Microsoft.VSTS.Common.AcceptanceCriteria'
+        $pbiDescription = Get-WorkItemFieldValue -Fields $pbi.fields -FieldName 'System.Description' -DefaultValue ''
+        $pbiAc          = Get-WorkItemFieldValue -Fields $pbi.fields -FieldName 'Microsoft.VSTS.Common.AcceptanceCriteria' -DefaultValue ''
 
         log_info "Starting PBI ${pbiId}: $pbiTitle"
 
@@ -1025,7 +1366,7 @@ try {
     if ($featureSuccess) {
         log_info "All PBIs completed — creating pull request for Feature $featureId"
         try {
-            $prUrl = New-PullRequest -FeatureTitle $featureTitle -FeatureBranch $featureBranch -Pbis $sortedPbis
+            $prUrl = New-PullRequest -FeatureTitle $featureTitle -FeatureBranch $featureBranch -Pbis $prPbis
         } catch {
             Add-FeatureLogNote -Message 'Failed to create pull request'
             throw
