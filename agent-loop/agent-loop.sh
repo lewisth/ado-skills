@@ -58,8 +58,8 @@ Options:
   --team <name>             Azure DevOps team name
   --process <template>      Process template: Scrum, Agile, or CMMI
   --repo-url <url>          Git repository URL
-  --base-branch <branch>    Base branch to branch from (default: main)
-  --max-iterations <n>      Maximum loop iterations (default: 50)
+  --base-branch <branch>    Base branch (auto-detected from git if omitted)
+  --max-iterations <n>      Max agent invocations per PBI (default: 5)
   --provider <name>         AI provider: claude-code or cursor-cli
   --model <id>              Model ID to use (e.g. claude-opus-4-6)
   --working-directory <dir> Working directory containing the repo
@@ -67,8 +67,8 @@ Options:
 
 Environment variables:
   AZURE_DEVOPS_PAT          Required. Azure DevOps Personal Access Token.
-  ANTHROPIC_API_KEY         Required when --provider is anthropic.
-  CURSOR_API_KEY            Required when --provider is cursor.
+  ANTHROPIC_API_KEY         Required when --provider is claude-code.
+  CURSOR_API_KEY            Required when --provider is cursor-cli.
 
 Config file:
   .agent-loop.json          Optional JSON config in the working directory.
@@ -110,14 +110,14 @@ if [ -f "$CONFIG_FILE" ]; then
     exit 1
   fi
 
-  CONFIG_ORG=$(jq -r '.org // empty' "$CONFIG_FILE" 2>/dev/null || true)
+  CONFIG_ORG=$(jq -r '.organizationUrl // empty' "$CONFIG_FILE" 2>/dev/null || true)
   CONFIG_PROJECT=$(jq -r '.project // empty' "$CONFIG_FILE" 2>/dev/null || true)
   CONFIG_AREA_PATH=$(jq -r '.areaPath // empty' "$CONFIG_FILE" 2>/dev/null || true)
   CONFIG_TEAM=$(jq -r '.team // empty' "$CONFIG_FILE" 2>/dev/null || true)
   CONFIG_PROCESS=$(jq -r '.process // empty' "$CONFIG_FILE" 2>/dev/null || true)
-  CONFIG_REPO_URL=$(jq -r '.repoUrl // empty' "$CONFIG_FILE" 2>/dev/null || true)
+  CONFIG_REPO_URL=$(jq -r '.repositoryUrl // empty' "$CONFIG_FILE" 2>/dev/null || true)
   CONFIG_BASE_BRANCH=$(jq -r '.baseBranch // empty' "$CONFIG_FILE" 2>/dev/null || true)
-  CONFIG_MAX_ITERATIONS=$(jq -r '.maxIterations // empty' "$CONFIG_FILE" 2>/dev/null || true)
+  CONFIG_MAX_ITERATIONS=$(jq -r '.maxIterationsPerPbi // empty' "$CONFIG_FILE" 2>/dev/null || true)
   CONFIG_PROVIDER=$(jq -r '.provider // empty' "$CONFIG_FILE" 2>/dev/null || true)
   CONFIG_MODEL=$(jq -r '.model // empty' "$CONFIG_FILE" 2>/dev/null || true)
   CONFIG_WORKING_DIRECTORY=$(jq -r '.workingDirectory // empty' "$CONFIG_FILE" 2>/dev/null || true)
@@ -131,8 +131,8 @@ AREA_PATH="${CLI_AREA_PATH:-$CONFIG_AREA_PATH}"
 TEAM="${CLI_TEAM:-$CONFIG_TEAM}"
 PROCESS="${CLI_PROCESS:-$CONFIG_PROCESS}"
 REPO_URL="${CLI_REPO_URL:-$CONFIG_REPO_URL}"
-BASE_BRANCH="${CLI_BASE_BRANCH:-${CONFIG_BASE_BRANCH:-main}}"
-MAX_ITERATIONS="${CLI_MAX_ITERATIONS:-${CONFIG_MAX_ITERATIONS:-50}}"
+BASE_BRANCH="${CLI_BASE_BRANCH:-${CONFIG_BASE_BRANCH:-}}"
+MAX_ITERATIONS="${CLI_MAX_ITERATIONS:-${CONFIG_MAX_ITERATIONS:-5}}"
 PROVIDER="${CLI_PROVIDER:-$CONFIG_PROVIDER}"
 MODEL="${CLI_MODEL:-$CONFIG_MODEL}"
 FEATURE_ID="${CLI_FEATURE_ID:-$CONFIG_FEATURE_ID}"
@@ -203,8 +203,8 @@ echo "  agent-loop"
 echo "  Org:             $ORG"
 echo "  Project:         $PROJECT"
 echo "  Provider:        $PROVIDER${MODEL:+ ($MODEL)}"
-echo "  Base branch:     $BASE_BRANCH"
-echo "  Max iterations:  $MAX_ITERATIONS"
+echo "  Base branch:     ${BASE_BRANCH:-(auto-detect)}"
+echo "  Max iter/PBI:    $MAX_ITERATIONS"
 [ -n "$FEATURE_ID" ] && echo "  Feature ID:      $FEATURE_ID"
 [ -n "$AREA_PATH" ]  && echo "  Area path:       $AREA_PATH"
 [ -n "$TEAM" ]       && echo "  Team:            $TEAM"
@@ -234,10 +234,13 @@ AGENT_CONTEXT_DIR="$WORKING_DIR/.agent-context"
 
 ensure_gitignore() {
   local gitignore="$WORKING_DIR/.gitignore"
-  if [ ! -f "$gitignore" ] || ! grep -qxF '.agent-context/' "$gitignore"; then
-    echo '.agent-context/' >> "$gitignore"
-    log_info ".agent-context/ added to .gitignore"
-  fi
+  local entries=('.agent-context/' '.agent-loop.lock')
+  for entry in "${entries[@]}"; do
+    if [ ! -f "$gitignore" ] || ! grep -qxF "$entry" "$gitignore"; then
+      echo "$entry" >> "$gitignore"
+      log_info "$entry added to .gitignore"
+    fi
+  done
 }
 
 write_feature_context() {
@@ -697,6 +700,14 @@ trap 'release_lock; cleanup' EXIT
 acquire_lock
 ensure_gitignore
 
+# Resolve base branch early (auto-detect if not configured) so it is
+# available to both create_feature_branch and create_pull_request.
+BASE_BRANCH=$(detect_default_branch) || {
+  log_error "Failed to determine base branch"
+  exit 1
+}
+log_info "Base branch resolved to '$BASE_BRANCH'"
+
 # ── Agent dispatcher ───────────────────────────────────────────────────
 
 # Assembles the prompt that will be sent to the AI agent.
@@ -761,8 +772,7 @@ invoke_agent() {
       output=$(claude -p "$prompt" \
         --output-format json \
         "${model_args[@]}" \
-        --allowedTools "Read,Write,Edit,Bash" \
-        --max-turns "$MAX_ITERATIONS" 2>&1) || exit_code=$?
+        --allowedTools "Read,Write,Edit,Bash" 2>&1) || exit_code=$?
       ;;
     cursor-cli)
       output=$(agent -p "$prompt" --force --output-format json 2>&1) || exit_code=$?
@@ -897,12 +907,18 @@ PBIS_JSON=$(get_child_pbis "$FEATURE_ID") || {
   exit 1
 }
 
+# Filter to only PBIs tagged "ready-for-agent" in "New" state.
+PBIS_JSON=$(printf '%s' "$PBIS_JSON" | jq '[.[] | select(
+  ((.fields["System.Tags"] // "") | contains("ready-for-agent"))
+  and .fields["System.State"] == "New"
+)]')
+
 PBI_COUNT=$(printf '%s' "$PBIS_JSON" | jq 'length')
 if [ "$PBI_COUNT" -eq 0 ]; then
-  log_info "Feature $FEATURE_ID has no child PBIs — nothing to do"
+  log_info "Feature $FEATURE_ID has no eligible child PBIs (ready-for-agent + New) — nothing to do"
   exit 0
 fi
-log_info "Found $PBI_COUNT PBI(s) for Feature $FEATURE_ID"
+log_info "Found $PBI_COUNT eligible PBI(s) for Feature $FEATURE_ID"
 
 # Step 6: Topologically sort PBIs by dependency
 log_info "Sorting PBIs by dependency order"

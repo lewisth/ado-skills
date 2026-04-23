@@ -25,10 +25,10 @@
   Git repository URL
 
 .PARAMETER BaseBranch
-  Base branch to branch from (default: main)
+  Base branch (auto-detected from git if omitted)
 
 .PARAMETER MaxIterations
-  Maximum loop iterations (default: 50)
+  Max agent invocations per PBI (default: 5)
 
 .PARAMETER Provider
   AI provider: claude-code or cursor-cli
@@ -45,8 +45,8 @@
 .NOTES
   Required environment variables:
     AZURE_DEVOPS_PAT     — Azure DevOps Personal Access Token
-    ANTHROPIC_API_KEY    — Required when -Provider is anthropic
-    CURSOR_API_KEY       — Required when -Provider is cursor
+    ANTHROPIC_API_KEY    — Required when -Provider is claude-code
+    CURSOR_API_KEY       — Required when -Provider is cursor-cli
 #>
 
 [CmdletBinding()]
@@ -103,18 +103,18 @@ $fileConfig = @{}
 if (Test-Path $configFile) {
     try {
         $json = Get-Content $configFile -Raw | ConvertFrom-Json
-        if ($null -ne $json.org)              { $fileConfig['Org']              = $json.org }
-        if ($null -ne $json.project)          { $fileConfig['Project']          = $json.project }
-        if ($null -ne $json.areaPath)         { $fileConfig['AreaPath']         = $json.areaPath }
-        if ($null -ne $json.team)             { $fileConfig['Team']             = $json.team }
-        if ($null -ne $json.process)          { $fileConfig['Process']          = $json.process }
-        if ($null -ne $json.repoUrl)          { $fileConfig['RepoUrl']          = $json.repoUrl }
-        if ($null -ne $json.baseBranch)       { $fileConfig['BaseBranch']       = $json.baseBranch }
-        if ($null -ne $json.maxIterations)    { $fileConfig['MaxIterations']    = $json.maxIterations }
-        if ($null -ne $json.provider)         { $fileConfig['Provider']         = $json.provider }
-        if ($null -ne $json.model)            { $fileConfig['Model']            = $json.model }
+        if ($null -ne $json.organizationUrl) { $fileConfig['Org']              = $json.organizationUrl }
+        if ($null -ne $json.project)         { $fileConfig['Project']          = $json.project }
+        if ($null -ne $json.areaPath)        { $fileConfig['AreaPath']         = $json.areaPath }
+        if ($null -ne $json.team)            { $fileConfig['Team']             = $json.team }
+        if ($null -ne $json.process)         { $fileConfig['Process']          = $json.process }
+        if ($null -ne $json.repositoryUrl)   { $fileConfig['RepoUrl']          = $json.repositoryUrl }
+        if ($null -ne $json.baseBranch)      { $fileConfig['BaseBranch']       = $json.baseBranch }
+        if ($null -ne $json.maxIterationsPerPbi) { $fileConfig['MaxIterations'] = $json.maxIterationsPerPbi }
+        if ($null -ne $json.provider)        { $fileConfig['Provider']         = $json.provider }
+        if ($null -ne $json.model)           { $fileConfig['Model']            = $json.model }
         if ($null -ne $json.workingDirectory) { $fileConfig['WorkingDirectory'] = $json.workingDirectory }
-        if ($null -ne $json.featureId)        { $fileConfig['FeatureId']        = [string]$json.featureId }
+        if ($null -ne $json.featureId)       { $fileConfig['FeatureId']        = [string]$json.featureId }
     } catch {
         Write-Error "Error: Failed to parse ${configFile}: $_"
         exit 1
@@ -135,8 +135,8 @@ $resolvedAreaPath       = Resolve-Value $AreaPath      'AreaPath'
 $resolvedTeam           = Resolve-Value $Team          'Team'
 $resolvedProcess        = Resolve-Value $Process       'Process'
 $resolvedRepoUrl        = Resolve-Value $RepoUrl       'RepoUrl'
-$resolvedBaseBranch     = Resolve-Value $BaseBranch    'BaseBranch'    'main'
-$resolvedMaxIterations  = Resolve-Value $MaxIterations 'MaxIterations' 50
+$resolvedBaseBranch     = Resolve-Value $BaseBranch    'BaseBranch'    $null
+$resolvedMaxIterations  = Resolve-Value $MaxIterations 'MaxIterations' 5
 $resolvedProvider       = Resolve-Value $Provider      'Provider'
 $resolvedModel          = Resolve-Value $Model         'Model'
 $resolvedFeatureId      = Resolve-Value $FeatureId     'FeatureId'
@@ -204,13 +204,15 @@ $env:AGENT_LOOP_FEATURE_ID        = $resolvedFeatureId
 
 $modelLabel = if ($resolvedModel) { " ($resolvedModel)" } else { '' }
 
+$baseBranchLabel = if ($resolvedBaseBranch) { $resolvedBaseBranch } else { '(auto-detect)' }
+
 Write-Host ('=' * 54)
 Write-Host '  agent-loop'
 Write-Host "  Org:             $resolvedOrg"
 Write-Host "  Project:         $resolvedProject"
 Write-Host "  Provider:        ${resolvedProvider}${modelLabel}"
-Write-Host "  Base branch:     $resolvedBaseBranch"
-Write-Host "  Max iterations:  $resolvedMaxIterations"
+Write-Host "  Base branch:     $baseBranchLabel"
+Write-Host "  Max iter/PBI:    $resolvedMaxIterations"
 if ($resolvedFeatureId) { Write-Host "  Feature ID:      $resolvedFeatureId" }
 if ($resolvedAreaPath)  { Write-Host "  Area path:       $resolvedAreaPath" }
 if ($resolvedTeam)      { Write-Host "  Team:            $resolvedTeam" }
@@ -244,10 +246,12 @@ $agentContextDir = Join-Path $resolvedWorkingDir '.agent-context'
 
 function Ensure-Gitignore {
     $gitignore = Join-Path $resolvedWorkingDir '.gitignore'
-    $entry = '.agent-context/'
-    if (-not (Test-Path $gitignore) -or -not (Get-Content $gitignore -Raw).Contains($entry)) {
-        Add-Content -Path $gitignore -Value $entry
-        log_info ".agent-context/ added to .gitignore"
+    $entries = @('.agent-context/', '.agent-loop.lock')
+    foreach ($entry in $entries) {
+        if (-not (Test-Path $gitignore) -or -not (Get-Content $gitignore -Raw).Contains($entry)) {
+            Add-Content -Path $gitignore -Value $entry
+            log_info "$entry added to .gitignore"
+        }
     }
 }
 
@@ -721,8 +725,7 @@ function Invoke-Agent {
                 $output = & claude -p $Prompt `
                     --output-format json `
                     @modelArgs `
-                    --allowedTools 'Read,Write,Edit,Bash' `
-                    --max-turns $resolvedMaxIterations 2>&1 | Out-String
+                    --allowedTools 'Read,Write,Edit,Bash' 2>&1 | Out-String
             } catch {
                 $output   = $_.Exception.Message
                 $exitCode = 1
@@ -825,6 +828,11 @@ try {
     Acquire-Lock
     Ensure-Gitignore
 
+    # Resolve base branch early (auto-detect if not configured) so it is
+    # available to both New-FeatureBranch and New-PullRequest.
+    $resolvedBaseBranch = Get-DefaultBranch
+    log_info "Base branch resolved to '$resolvedBaseBranch'"
+
     # ── Orchestrator ──────────────────────────────────────────────────────
 
     log_info "agent-loop started"
@@ -857,11 +865,18 @@ try {
     log_info "Fetching child PBIs for Feature $featureId"
     $pbis = @(Get-ChildPbis -FeatureId $featureId)
 
+    # Filter to only PBIs tagged "ready-for-agent" in "New" state.
+    $pbis = @($pbis | Where-Object {
+        $tags  = $_.fields.'System.Tags'
+        $state = $_.fields.'System.State'
+        ($tags -and $tags -match 'ready-for-agent') -and ($state -eq 'New')
+    })
+
     if ($pbis.Count -eq 0) {
-        log_info "Feature $featureId has no child PBIs — nothing to do"
+        log_info "Feature $featureId has no eligible child PBIs (ready-for-agent + New) — nothing to do"
         exit 0
     }
-    log_info "Found $($pbis.Count) PBI(s) for Feature $featureId"
+    log_info "Found $($pbis.Count) eligible PBI(s) for Feature $featureId"
 
     # Step 6: Topologically sort PBIs by dependency
     log_info "Sorting PBIs by dependency order"
