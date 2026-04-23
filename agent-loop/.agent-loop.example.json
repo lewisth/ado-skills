@@ -1,0 +1,14 @@
+{
+  "org": "https://dev.azure.com/your-org",
+  "project": "Your Project",
+  "areaPath": "Your Project\\Your Team",
+  "team": "Your Project Team",
+  "process": "Scrum",
+  "repoUrl": "https://dev.azure.com/your-org/Your%20Project/_git/your-repo",
+  "baseBranch": "main",
+  "maxIterations": 50,
+  "provider": "anthropic",
+  "model": "claude-opus-4-6",
+  "workingDirectory": "/path/to/your/repo",
+  "featureId": 42
+}

@@ -3,3 +3,4 @@
 .cursor/
 temp-agent-loop.sh
 progress.txt
+.agent-context/
