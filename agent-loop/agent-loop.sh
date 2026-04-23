@@ -378,6 +378,15 @@ get_work_item() {
   _ado_call GET "$url"
 }
 
+# Returns the "in progress" state name for the configured process template.
+# Scrum → "In Progress"; Agile/CMMI → "Active"; unknown → "In Progress".
+get_in_progress_state() {
+  case "${PROCESS:-}" in
+    Agile|CMMI) echo "Active" ;;
+    *)          echo "In Progress" ;;
+  esac
+}
+
 # Transitions a work item to the given state.
 # The caller is responsible for passing the correct state name for the process
 # template (e.g. "Active" for Agile, "In Progress" for Scrum).
@@ -800,9 +809,11 @@ process_pbi() {
 
   log_info "Starting inner loop for PBI $pbi_id: $pbi_title"
 
-  # Set PBI state to "In Progress" before first agent invocation.
-  update_work_item_state "$pbi_id" "In Progress" || {
-    log_error "process_pbi: failed to set PBI $pbi_id to 'In Progress' — aborting"
+  # Set PBI state to the process-appropriate in-progress state before first agent invocation.
+  local in_progress_state
+  in_progress_state=$(get_in_progress_state)
+  update_work_item_state "$pbi_id" "$in_progress_state" || {
+    log_error "process_pbi: failed to set PBI $pbi_id to '$in_progress_state' — aborting"
     return 1
   }
 

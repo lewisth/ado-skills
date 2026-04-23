@@ -375,6 +375,15 @@ function Get-WorkItem {
 }
 
 # Transitions a work item to the given state.
+# Returns the "in progress" state name for the configured process template.
+# Scrum → "In Progress"; Agile/CMMI → "Active"; unknown → "In Progress".
+function Get-InProgressState {
+    switch ($resolvedProcess) {
+        { $_ -in @('Agile', 'CMMI') } { return 'Active' }
+        default                        { return 'In Progress' }
+    }
+}
+
 # The caller is responsible for passing the correct state name for the process
 # template (e.g. "Active" for Agile, "In Progress" for Scrum).
 # Usage: Update-WorkItemState -WorkItemId <id> -State <state>
@@ -774,11 +783,12 @@ function Invoke-ProcessPbi {
 
     log_info "Starting inner loop for PBI ${PbiId}: $PbiTitle"
 
-    # Set PBI state to "In Progress" before first agent invocation.
+    # Set PBI state to the process-appropriate in-progress state before first agent invocation.
+    $inProgressState = Get-InProgressState
     try {
-        Update-WorkItemState -WorkItemId $PbiId -State 'In Progress'
+        Update-WorkItemState -WorkItemId $PbiId -State $inProgressState
     } catch {
-        log_error "Invoke-ProcessPbi: failed to set PBI $PbiId to 'In Progress' — aborting"
+        log_error "Invoke-ProcessPbi: failed to set PBI $PbiId to '$inProgressState' — aborting"
         return $false
     }
 
