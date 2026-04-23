@@ -62,7 +62,7 @@ Options:
   --repo-url <url>          Git repository URL
   --base-branch <branch>    Base branch (auto-detected from git if omitted)
   --max-iterations <n>      Max agent invocations per PBI (default: 5)
-  --provider <name>         AI provider: claude-code or cursor-cli
+  --provider <name>         AI provider: claude-code, cursor, or cursor-cli
   --model <id>              Model ID to use (e.g. claude-opus-4-6)
   --working-directory <dir> Working directory containing the repo
   --system-log-directory <dir>
@@ -71,8 +71,11 @@ Options:
 
 Environment variables:
   AZURE_DEVOPS_PAT          Required. Azure DevOps Personal Access Token.
-  ANTHROPIC_API_KEY         Required when --provider is claude-code.
-  CURSOR_API_KEY            Required when --provider is cursor-cli.
+  ANTHROPIC_API_KEY         Optional when --provider is claude-code;
+                            if set, Claude Code uses API-key auth instead of
+                            the signed-in Claude session.
+  CURSOR_API_KEY            Optional when --provider is cursor/cursor-cli;
+                            if omitted, the signed-in Cursor session is used.
 
 Config file:
   .agent-loop.json          Optional JSON config in the working directory.
@@ -95,6 +98,36 @@ resolve_system_log_directory() {
     Darwin) printf '%s\n' "${HOME}/Library/Logs/agent-loop" ;;
     Linux)  printf '%s\n' "${XDG_STATE_HOME:-${HOME}/.local/state}/agent-loop/logs" ;;
     *)      printf '%s\n' "${HOME}/.agent-loop/logs" ;;
+  esac
+}
+
+normalize_provider_name() {
+  local provider_value="$1"
+
+  case "${provider_value,,}" in
+    cursor|cursor-cli) printf '%s\n' "cursor-cli" ;;
+    claude-code) printf '%s\n' "claude-code" ;;
+    *) printf '%s\n' "$provider_value" ;;
+  esac
+}
+
+normalize_cursor_model() {
+  local provider_value="$1"
+  local model_value="$2"
+
+  if [ "$provider_value" != "cursor-cli" ] || [ -z "$model_value" ]; then
+    printf '%s\n' "$model_value"
+    return 0
+  fi
+
+  case "$model_value" in
+    claude-opus-4-6)
+      log_info "Normalizing Cursor model '$model_value' to 'claude-4.6-opus-high-thinking'."
+      printf '%s\n' "claude-4.6-opus-high-thinking"
+      ;;
+    *)
+      printf '%s\n' "$model_value"
+      ;;
   esac
 }
 
@@ -123,30 +156,43 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ── Load config file ──────────────────────────────────────────────────
-# Resolve working directory: CLI > env > current directory
-INITIAL_WORKING_DIR="${CLI_WORKING_DIRECTORY:-${AGENT_LOOP_WORKING_DIRECTORY:-$(pwd)}}"
-WORKING_DIR="$INITIAL_WORKING_DIR"
-CONFIG_FILE="$INITIAL_WORKING_DIR/.agent-loop.json"
+import_config_file() {
+  local config_file="$1"
 
-if [ -f "$CONFIG_FILE" ]; then
+  if [ ! -f "$config_file" ]; then
+    return 0
+  fi
+
   if ! command -v jq &>/dev/null; then
     echo "Error: jq is required to parse .agent-loop.json. Install with: brew install jq / sudo apt install jq" >&2
     exit 1
   fi
 
-  CONFIG_ORG=$(jq -r '.organizationUrl // empty' "$CONFIG_FILE" 2>/dev/null || true)
-  CONFIG_PROJECT=$(jq -r '.project // empty' "$CONFIG_FILE" 2>/dev/null || true)
-  CONFIG_AREA_PATH=$(jq -r '.areaPath // empty' "$CONFIG_FILE" 2>/dev/null || true)
-  CONFIG_TEAM=$(jq -r '.team // empty' "$CONFIG_FILE" 2>/dev/null || true)
-  CONFIG_PROCESS=$(jq -r '.process // empty' "$CONFIG_FILE" 2>/dev/null || true)
-  CONFIG_REPO_URL=$(jq -r '.repositoryUrl // empty' "$CONFIG_FILE" 2>/dev/null || true)
-  CONFIG_BASE_BRANCH=$(jq -r '.baseBranch // empty' "$CONFIG_FILE" 2>/dev/null || true)
-  CONFIG_MAX_ITERATIONS=$(jq -r '.maxIterationsPerPbi // empty' "$CONFIG_FILE" 2>/dev/null || true)
-  CONFIG_PROVIDER=$(jq -r '.provider // empty' "$CONFIG_FILE" 2>/dev/null || true)
-  CONFIG_MODEL=$(jq -r '.model // empty' "$CONFIG_FILE" 2>/dev/null || true)
-  CONFIG_WORKING_DIRECTORY=$(jq -r '.workingDirectory // empty' "$CONFIG_FILE" 2>/dev/null || true)
-  CONFIG_SYSTEM_LOG_DIRECTORY=$(jq -r '.systemLogDirectory // empty' "$CONFIG_FILE" 2>/dev/null || true)
-  CONFIG_FEATURE_ID=$(jq -r '.featureId // empty' "$CONFIG_FILE" 2>/dev/null || true)
+  CONFIG_ORG=$(jq -r '.organizationUrl // empty' "$config_file" 2>/dev/null || true)
+  CONFIG_PROJECT=$(jq -r '.project // empty' "$config_file" 2>/dev/null || true)
+  CONFIG_AREA_PATH=$(jq -r '.areaPath // empty' "$config_file" 2>/dev/null || true)
+  CONFIG_TEAM=$(jq -r '.team // empty' "$config_file" 2>/dev/null || true)
+  CONFIG_PROCESS=$(jq -r '.process // empty' "$config_file" 2>/dev/null || true)
+  CONFIG_REPO_URL=$(jq -r '.repositoryUrl // empty' "$config_file" 2>/dev/null || true)
+  CONFIG_BASE_BRANCH=$(jq -r '.baseBranch // empty' "$config_file" 2>/dev/null || true)
+  CONFIG_MAX_ITERATIONS=$(jq -r '.maxIterationsPerPbi // empty' "$config_file" 2>/dev/null || true)
+  CONFIG_PROVIDER=$(jq -r '.provider // empty' "$config_file" 2>/dev/null || true)
+  CONFIG_MODEL=$(jq -r '.model // empty' "$config_file" 2>/dev/null || true)
+  CONFIG_WORKING_DIRECTORY=$(jq -r '.workingDirectory // empty' "$config_file" 2>/dev/null || true)
+  CONFIG_SYSTEM_LOG_DIRECTORY=$(jq -r '.systemLogDirectory // empty' "$config_file" 2>/dev/null || true)
+  CONFIG_FEATURE_ID=$(jq -r '.featureId // empty' "$config_file" 2>/dev/null || true)
+}
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_CONFIG_FILE="$SCRIPT_DIR/.agent-loop.json"
+import_config_file "$SCRIPT_CONFIG_FILE"
+
+CANDIDATE_WORKING_DIR="${CLI_WORKING_DIRECTORY:-${CONFIG_WORKING_DIRECTORY:-${AGENT_LOOP_WORKING_DIRECTORY:-$(pwd)}}}"
+if [ -n "$CANDIDATE_WORKING_DIR" ]; then
+  WORKING_CONFIG_FILE="$CANDIDATE_WORKING_DIR/.agent-loop.json"
+  if [ "$(cd "$(dirname "$WORKING_CONFIG_FILE")" 2>/dev/null && pwd)/$(basename "$WORKING_CONFIG_FILE")" != "$(cd "$(dirname "$SCRIPT_CONFIG_FILE")" 2>/dev/null && pwd)/$(basename "$SCRIPT_CONFIG_FILE")" ]; then
+    import_config_file "$WORKING_CONFIG_FILE"
+  fi
 fi
 
 # ── Merge: CLI wins over config file ─────────────────────────────────
@@ -158,18 +204,20 @@ PROCESS="${CLI_PROCESS:-$CONFIG_PROCESS}"
 REPO_URL="${CLI_REPO_URL:-$CONFIG_REPO_URL}"
 BASE_BRANCH="${CLI_BASE_BRANCH:-${CONFIG_BASE_BRANCH:-}}"
 MAX_ITERATIONS="${CLI_MAX_ITERATIONS:-${CONFIG_MAX_ITERATIONS:-5}}"
-PROVIDER="${CLI_PROVIDER:-$CONFIG_PROVIDER}"
+PROVIDER="$(normalize_provider_name "${CLI_PROVIDER:-$CONFIG_PROVIDER}")"
 MODEL="${CLI_MODEL:-$CONFIG_MODEL}"
 FEATURE_ID="${CLI_FEATURE_ID:-$CONFIG_FEATURE_ID}"
-WORKING_DIR="${CLI_WORKING_DIRECTORY:-${CONFIG_WORKING_DIRECTORY:-$INITIAL_WORKING_DIR}}"
+WORKING_DIR="${CLI_WORKING_DIRECTORY:-${CONFIG_WORKING_DIRECTORY:-${AGENT_LOOP_WORKING_DIRECTORY:-$(pwd)}}}"
 SYSTEM_LOG_DIR="${CLI_SYSTEM_LOG_DIRECTORY:-${CONFIG_SYSTEM_LOG_DIRECTORY:-${AGENT_LOOP_SYSTEM_LOG_DIR:-$(resolve_system_log_directory)}}}"
+
+MODEL="$(normalize_cursor_model "$PROVIDER" "$MODEL")"
 
 # ── Validate required values ──────────────────────────────────────────
 ERRORS=()
 
 [ -z "$ORG" ]      && ERRORS+=("Missing required value: --org (Azure DevOps org URL)")
 [ -z "$PROJECT" ]  && ERRORS+=("Missing required value: --project (Azure DevOps project name)")
-[ -z "$PROVIDER" ] && ERRORS+=("Missing required value: --provider (claude-code or cursor-cli)")
+[ -z "$PROVIDER" ] && ERRORS+=("Missing required value: --provider (claude-code, cursor, or cursor-cli)")
 
 if [ ${#ERRORS[@]} -gt 0 ]; then
   echo "Error: Configuration is incomplete:" >&2
@@ -184,7 +232,7 @@ fi
 
 # ── Validate provider value ───────────────────────────────────────────
 if [[ "$PROVIDER" != "claude-code" && "$PROVIDER" != "cursor-cli" ]]; then
-  echo "Error: Invalid provider '$PROVIDER'. Must be 'claude-code' or 'cursor-cli'." >&2
+  echo "Error: Invalid provider '$PROVIDER'. Must be 'claude-code', 'cursor', or 'cursor-cli'." >&2
   exit 1
 fi
 
@@ -210,12 +258,18 @@ if [ -z "${AZURE_DEVOPS_PAT:-}" ]; then
   ENV_ERRORS+=("Missing required environment variable: AZURE_DEVOPS_PAT")
 fi
 
-if [ "$PROVIDER" = "claude-code" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
-  ENV_ERRORS+=("Missing required environment variable: ANTHROPIC_API_KEY (required for provider=claude-code)")
+if [ "$PROVIDER" = "claude-code" ]; then
+  if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    log_warn "ANTHROPIC_API_KEY is set; Claude Code will use API-key auth instead of the signed-in Claude session."
+  elif [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+    log_info "CLAUDE_CODE_OAUTH_TOKEN detected; Claude Code will use OAuth token auth."
+  else
+    log_info "Claude Code will use the signed-in Claude session. Run 'claude' and complete login first if needed."
+  fi
 fi
 
 if [ "$PROVIDER" = "cursor-cli" ] && [ -z "${CURSOR_API_KEY:-}" ]; then
-  ENV_ERRORS+=("Missing required environment variable: CURSOR_API_KEY (required for provider=cursor-cli)")
+  log_info "CURSOR_API_KEY not set; Cursor Agent will use the signed-in Cursor session."
 fi
 
 if [ ${#ENV_ERRORS[@]} -gt 0 ]; then
@@ -457,9 +511,10 @@ get_work_item() {
 }
 
 # Returns the "in progress" state name for the configured process template.
-# Scrum → "In Progress"; Agile/CMMI → "Active"; unknown → "In Progress".
+# Scrum → "Committed"; Agile/CMMI → "Active"; unknown → "In Progress".
 get_in_progress_state() {
   case "${PROCESS:-}" in
+    Scrum)      echo "Committed" ;;
     Agile|CMMI) echo "Active" ;;
     *)          echo "In Progress" ;;
   esac
@@ -473,11 +528,33 @@ update_work_item_state() {
   local work_item_id="$1"
   local state="$2"
 
+  local current_work_item
+  current_work_item=$(get_work_item "$work_item_id") || return 1
+
+  local current_state
+  current_state=$(printf '%s' "$current_work_item" | jq -r '.fields["System.State"] // ""')
+  if [ "$current_state" = "$state" ]; then
+    log_info "Work item $work_item_id is already in state '$state'"
+    return 0
+  fi
+
   local payload
   payload=$(jq -n --arg s "$state" '[{"op":"replace","path":"/fields/System.State","value":$s}]')
 
   local url="${ORG}/${PROJECT}/_apis/wit/workitems/${work_item_id}?api-version=7.1"
-  _ado_call PATCH "$url" "$payload" "application/json-patch+json" || return 1
+  if ! _ado_call PATCH "$url" "$payload" "application/json-patch+json" >/dev/null; then
+    local refreshed_work_item
+    refreshed_work_item=$(get_work_item "$work_item_id") || return 1
+
+    local refreshed_state
+    refreshed_state=$(printf '%s' "$refreshed_work_item" | jq -r '.fields["System.State"] // ""')
+    if [ "$refreshed_state" = "$state" ]; then
+      log_warn "Work item $work_item_id was updated to '$state' by another process; continuing"
+      return 0
+    fi
+
+    return 1
+  fi
   log_info "Work item $work_item_id state set to '$state'"
 }
 
@@ -526,18 +603,72 @@ create_pull_request() {
   local feature_title="$1"
   local feature_branch="$2"
   local pbis_json="$3"
+  local repo_url_for_pr="$REPO_URL"
 
-  if [ -z "$REPO_URL" ]; then
-    log_error "create_pull_request: REPO_URL is not set — cannot determine repository for PR creation"
+  local origin_repo_url=""
+  if origin_repo_url=$(git remote get-url origin 2>/dev/null); then
+    origin_repo_url="${origin_repo_url%%$'\n'*}"
+    if [ -n "$origin_repo_url" ]; then
+      repo_url_for_pr="$origin_repo_url"
+    fi
+  fi
+
+  if [ -z "$repo_url_for_pr" ]; then
+    log_error "create_pull_request: REPO_URL is not set and origin remote could not be resolved"
     return 1
   fi
 
-  # Extract repository name from REPO_URL (last path segment after /_git/).
-  local repo_id
-  repo_id=$(printf '%s' "$REPO_URL" | sed 's|.*/_git/||' | sed 's|[/?].*||')
+  local repo_path
+  repo_path=$(printf '%s' "$repo_url_for_pr" | sed -E 's|^[^:]+://[^/]+||; s|^[^@]+@[^:]+:|/|')
+  repo_path="${repo_path#/}"
+  repo_path="${repo_path%%\?*}"
 
-  if [ -z "$repo_id" ]; then
-    log_error "create_pull_request: unable to parse repository name from REPO_URL='$REPO_URL'"
+  IFS='/' read -r -a repo_path_parts <<< "$repo_path"
+  if [ "${#repo_path_parts[@]}" -lt 4 ] || [ "${repo_path_parts[2]}" != "_git" ]; then
+    log_error "create_pull_request: unable to parse repository project/name from REPO_URL='$repo_url_for_pr'"
+    return 1
+  fi
+
+  local repo_project="${repo_path_parts[1]}"
+  local repo_name_from_url="${repo_path_parts[3]}"
+  if [ -z "$repo_project" ] || [ -z "$repo_name_from_url" ]; then
+    log_error "create_pull_request: parsed invalid repository context from REPO_URL='$repo_url_for_pr'"
+    return 1
+  fi
+
+  local repo_list_url="${ORG}/${repo_project}/_apis/git/repositories?api-version=7.1"
+  local repo_list_json
+  repo_list_json=$(_ado_call GET "$repo_list_url") || return 1
+
+  local repo_name_candidates_json
+  repo_name_candidates_json=$(jq -n \
+    --arg repoName "$repo_name_from_url" \
+    '[$repoName, ($repoName | sub("\\.git$"; ""))] | map(select(length > 0)) | unique')
+
+  local repo_json
+  repo_json=$(printf '%s' "$repo_list_json" | jq -c \
+    --argjson names "$repo_name_candidates_json" '
+      (.value // [])
+      | map(
+          . as $repo
+          | (($names | index($repo.name)) != null
+             or ($names | index(($repo.name | sub("\\.git$"; "")))) != null)
+          | select(.)
+          | $repo
+        )
+      | .[0] // empty
+    ')
+
+  if [ -z "$repo_json" ]; then
+    log_error "create_pull_request: unable to resolve repository metadata for REPO_URL='$repo_url_for_pr'"
+    return 1
+  fi
+
+  local repo_id repo_name
+  repo_id=$(printf '%s' "$repo_json" | jq -r '.id // empty')
+  repo_name=$(printf '%s' "$repo_json" | jq -r '.name // empty')
+  if [ -z "$repo_id" ] || [ -z "$repo_name" ]; then
+    log_error "create_pull_request: could not parse repository metadata from REPO_URL='$repo_url_for_pr'"
     return 1
   fi
 
@@ -567,7 +698,7 @@ create_pull_request() {
       "workItemRefs":  $wir
     }')
 
-  local url="${ORG}/${PROJECT}/_apis/git/repositories/${repo_id}/pullrequests?api-version=7.1"
+  local url="${ORG}/${repo_project}/_apis/git/repositories/${repo_id}/pullrequests?api-version=7.1"
   local response
   response=$(_ado_call POST "$url" "$payload") || {
     log_error "create_pull_request: failed to create PR for branch '$feature_branch'"
@@ -582,7 +713,7 @@ create_pull_request() {
     return 1
   fi
 
-  local pr_web_url="${ORG}/${PROJECT}/_git/${repo_id}/pullrequest/${pr_id}"
+  local pr_web_url="${ORG}/${repo_project}/_git/${repo_name}/pullrequest/${pr_id}"
   log_info "Pull request #${pr_id} created: $pr_web_url"
   printf '%s\n' "$pr_web_url"
 }
@@ -854,6 +985,47 @@ invoke_agent() {
   AGENT_INVOKE_EXIT_CODE=0
   AGENT_INVOKE_COMPLETED="false"
 
+  test_agent_completion_value() {
+    local input="$1"
+
+    if [ -z "$input" ]; then
+      return 1
+    fi
+
+    if printf '%s\n' "$input" | grep -Eq '^[[:space:]]*AGENT_COMPLETE[[:space:]]*$'; then
+      return 0
+    fi
+
+    if printf '%s' "$input" | jq -e '
+      def contains_completion:
+        if type == "string" then test("(?m)^\\s*AGENT_COMPLETE\\s*$")
+        elif type == "array" then any(.[]; contains_completion)
+        elif type == "object" then any(.[]; contains_completion)
+        else false
+        end;
+      contains_completion
+    ' >/dev/null 2>&1; then
+      return 0
+    fi
+
+    while IFS= read -r line; do
+      [ -z "$line" ] && continue
+      if printf '%s' "$line" | jq -e '
+        def contains_completion:
+          if type == "string" then test("(?m)^\\s*AGENT_COMPLETE\\s*$")
+          elif type == "array" then any(.[]; contains_completion)
+          elif type == "object" then any(.[]; contains_completion)
+          else false
+          end;
+        contains_completion
+      ' >/dev/null 2>&1; then
+        return 0
+      fi
+    done <<< "$input"
+
+    return 1
+  }
+
   case "$PROVIDER" in
     claude-code)
       local model_args=()
@@ -866,17 +1038,26 @@ invoke_agent() {
         --allowedTools "Read,Write,Edit,Bash" 2>&1) || exit_code=$?
       ;;
     cursor-cli)
-      output=$(agent -p "$prompt" --force --output-format json 2>&1) || exit_code=$?
+      local model_args=()
+      if [ -n "$MODEL" ]; then
+        model_args=(--model "$MODEL")
+      fi
+      output=$(agent -p "$prompt" \
+        --force \
+        --trust \
+        --workspace "$WORKING_DIR" \
+        --output-format json \
+        "${model_args[@]}" 2>&1) || exit_code=$?
       ;;
     *)
-      log_error "invoke_agent: unknown provider '$PROVIDER'. Must be 'claude-code' or 'cursor-cli'."
+      log_error "invoke_agent: unknown provider '$PROVIDER'. Must be 'claude-code', 'cursor', or 'cursor-cli'."
       return 1
       ;;
   esac
 
   AGENT_INVOKE_EXIT_CODE=$exit_code
 
-  if printf '%s\n' "$output" | grep -qx 'AGENT_COMPLETE'; then
+  if test_agent_completion_value "$output"; then
     AGENT_INVOKE_COMPLETED="true"
   fi
 
@@ -1008,28 +1189,66 @@ PBIS_JSON=$(get_child_pbis "$FEATURE_ID") || {
   exit 1
 }
 
-# Filter to only PBIs tagged "ready-for-agent" in "New" state.
-PBIS_JSON=$(printf '%s' "$PBIS_JSON" | jq '[.[] | select(
+runnable_state=$(get_in_progress_state)
+READY_FOR_AGENT_PBIS=$(printf '%s' "$PBIS_JSON" | jq '[.[] | select(
   ((.fields["System.Tags"] // "")
     | split(";")
     | map(gsub("^\\s+|\\s+$"; ""))
     | any(. == "ready-for-agent"))
-  and .fields["System.State"] == "New"
 )]')
+
+READY_FOR_AGENT_COUNT=$(printf '%s' "$READY_FOR_AGENT_PBIS" | jq 'length')
+if [ "$READY_FOR_AGENT_COUNT" -eq 0 ]; then
+  log_info "Feature $FEATURE_ID has no ready-for-agent child PBIs — nothing to do"
+  exit 0
+fi
+
+REMAINING_READY_FOR_AGENT_PBIS=$(printf '%s' "$READY_FOR_AGENT_PBIS" | jq '[.[] | select(
+  ((.fields["System.Tags"] // "")
+    | split(";")
+    | map(gsub("^\\s+|\\s+$"; ""))
+    | any(. == "agent-done")) | not
+)]')
+
+PBIS_JSON=$(printf '%s' "$REMAINING_READY_FOR_AGENT_PBIS" | jq \
+  --arg runnable_state "$runnable_state" '[.[] | select(
+    ((.fields["System.Tags"] // "")
+      | split(";")
+      | map(gsub("^\\s+|\\s+$"; ""))
+      | any(. == "ready-for-agent"))
+    and (((.fields["System.Tags"] // "")
+      | split(";")
+      | map(gsub("^\\s+|\\s+$"; ""))
+      | any(. == "agent-done")) | not)
+    and ((.fields["System.State"] // "") == "New" or (.fields["System.State"] // "") == $runnable_state)
+  )]')
+
+log_info "Sorting PR PBIs by dependency order"
+PR_PBIS=$(sort_pbis_by_dependency "$READY_FOR_AGENT_PBIS") || {
+  log_error "Failed to sort PR PBIs by dependency for Feature $FEATURE_ID"
+  exit 1
+}
 
 PBI_COUNT=$(printf '%s' "$PBIS_JSON" | jq 'length')
 if [ "$PBI_COUNT" -eq 0 ]; then
-  log_info "Feature $FEATURE_ID has no eligible child PBIs (ready-for-agent + New) — nothing to do"
-  exit 0
-fi
-log_info "Found $PBI_COUNT eligible PBI(s) for Feature $FEATURE_ID"
+  REMAINING_READY_COUNT=$(printf '%s' "$REMAINING_READY_FOR_AGENT_PBIS" | jq 'length')
+  if [ "$REMAINING_READY_COUNT" -eq 0 ]; then
+    log_info "All ready-for-agent PBIs are already tagged agent-done — continuing to pull request creation"
+    SORTED_PBIS='[]'
+  else
+    log_info "Feature $FEATURE_ID has no eligible child PBIs (ready-for-agent + not agent-done + runnable state) — nothing to do"
+    exit 0
+  fi
+else
+  log_info "Found $PBI_COUNT eligible PBI(s) for Feature $FEATURE_ID"
 
-# Step 6: Topologically sort PBIs by dependency
-log_info "Sorting PBIs by dependency order"
-SORTED_PBIS=$(sort_pbis_by_dependency "$PBIS_JSON") || {
-  log_error "Failed to sort PBIs by dependency for Feature $FEATURE_ID"
-  exit 1
-}
+  # Step 6: Topologically sort PBIs by dependency
+  log_info "Sorting PBIs by dependency order"
+  SORTED_PBIS=$(sort_pbis_by_dependency "$PBIS_JSON") || {
+    log_error "Failed to sort PBIs by dependency for Feature $FEATURE_ID"
+    exit 1
+  }
+fi
 
 # Step 7: Create feature branch
 log_info "Creating feature branch for Feature $FEATURE_ID"
@@ -1046,28 +1265,30 @@ $FEATURE_DESCRIPTION"
 
 # Step 9/10: Process each PBI serially; stop on first failure
 FEATURE_SUCCESS=true
-for i in $(seq 0 $((PBI_COUNT - 1))); do
-  PBI_JSON=$(printf '%s' "$SORTED_PBIS" | jq ".[$i]")
-  PBI_ID=$(printf '%s' "$PBI_JSON" | jq -r '.id')
-  PBI_TITLE=$(printf '%s' "$PBI_JSON" | jq -r '.fields["System.Title"] // ""')
-  PBI_DESCRIPTION=$(printf '%s' "$PBI_JSON" | jq -r '.fields["System.Description"] // ""')
-  PBI_AC=$(printf '%s' "$PBI_JSON" | jq -r '.fields["Microsoft.VSTS.Common.AcceptanceCriteria"] // ""')
+if [ "$PBI_COUNT" -gt 0 ]; then
+  for i in $(seq 0 $((PBI_COUNT - 1))); do
+    PBI_JSON=$(printf '%s' "$SORTED_PBIS" | jq ".[$i]")
+    PBI_ID=$(printf '%s' "$PBI_JSON" | jq -r '.id')
+    PBI_TITLE=$(printf '%s' "$PBI_JSON" | jq -r '.fields["System.Title"] // ""')
+    PBI_DESCRIPTION=$(printf '%s' "$PBI_JSON" | jq -r '.fields["System.Description"] // ""')
+    PBI_AC=$(printf '%s' "$PBI_JSON" | jq -r '.fields["Microsoft.VSTS.Common.AcceptanceCriteria"] // ""')
 
-  log_info "Starting PBI $PBI_ID: $PBI_TITLE"
+    log_info "Starting PBI $PBI_ID: $PBI_TITLE"
 
-  if ! process_pbi "$PBI_ID" "$PBI_TITLE" "$PBI_DESCRIPTION" "$PBI_AC" "$FEATURE_BRANCH" "$FEATURE_ID"; then
-    log_error "PBI $PBI_ID failed — skipping remaining PBIs for Feature $FEATURE_ID"
-    FEATURE_SUCCESS=false
-    break
-  fi
+    if ! process_pbi "$PBI_ID" "$PBI_TITLE" "$PBI_DESCRIPTION" "$PBI_AC" "$FEATURE_BRANCH" "$FEATURE_ID"; then
+      log_error "PBI $PBI_ID failed — skipping remaining PBIs for Feature $FEATURE_ID"
+      FEATURE_SUCCESS=false
+      break
+    fi
 
-  log_info "PBI $PBI_ID completed"
-done
+    log_info "PBI $PBI_ID completed"
+  done
+fi
 
 # Step 11: Create PR only when all PBIs are tagged agent-done
 if [ "$FEATURE_SUCCESS" = "true" ]; then
   log_info "All PBIs completed — creating pull request for Feature $FEATURE_ID"
-  PR_URL=$(create_pull_request "$FEATURE_TITLE" "$FEATURE_BRANCH" "$SORTED_PBIS") || {
+  PR_URL=$(create_pull_request "$FEATURE_TITLE" "$FEATURE_BRANCH" "$PR_PBIS") || {
     log_error "Failed to create pull request for Feature $FEATURE_ID"
     append_feature_log_note "Failed to create pull request"
     exit 1

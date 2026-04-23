@@ -90,7 +90,7 @@ Useful optional values:
 
 Provider-specific environment variables:
 
-- `ANTHROPIC_API_KEY` when `provider` is `claude-code`
+- `ANTHROPIC_API_KEY` is optional when `provider` is `claude-code`; if set, Claude Code uses API-key auth instead of the signed-in Claude session
 - `CURSOR_API_KEY` when `provider` is `cursor-cli`
 
 ## Example Config
@@ -125,7 +125,9 @@ Run from the `agent-loop` folder, or pass `--working-directory` explicitly:
 
 ```bash
 export AZURE_DEVOPS_PAT=...
-export ANTHROPIC_API_KEY=...
+
+# Make sure `claude` is already signed in if using provider=claude-code.
+# Do not set ANTHROPIC_API_KEY if you want to use your Claude subscription.
 
 ./agent-loop.sh \
   --org "https://dev.azure.com/your-org" \
@@ -150,12 +152,11 @@ One-shot mode for a specific Feature:
 
 ```powershell
 $env:AZURE_DEVOPS_PAT = "..."
-$env:CURSOR_API_KEY = "..."
 
 ./agent-loop.ps1 `
   -Org "https://dev.azure.com/your-org" `
   -Project "Your Project" `
-  -Provider "cursor-cli" `
+  -Provider "claude-code" `
   -RepoUrl "https://dev.azure.com/your-org/Your%20Project/_git/your-repo" `
   -WorkingDirectory "/absolute/path/to/your/repo"
 ```
@@ -247,4 +248,5 @@ On failure, the scripts:
 
 - `repositoryUrl` is effectively required if you want automatic pull request creation.
 - If `baseBranch` is omitted, the scripts try to detect it from `origin/HEAD`.
+- `claude-code` does not require `ANTHROPIC_API_KEY` when the user is already logged into Claude Code. If `ANTHROPIC_API_KEY` is set, Claude Code will prefer the API key instead of the signed-in subscription session.
 - The Bash and PowerShell versions are intended to stay behaviorally aligned.
