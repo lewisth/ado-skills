@@ -18,6 +18,7 @@ CONFIG_MAX_ITERATIONS=""
 CONFIG_PROVIDER=""
 CONFIG_MODEL=""
 CONFIG_WORKING_DIRECTORY=""
+CONFIG_SYSTEM_LOG_DIRECTORY=""
 CONFIG_FEATURE_ID=""
 
 # ── CLI parameter parsing ─────────────────────────────────────────────
@@ -32,6 +33,7 @@ CLI_MAX_ITERATIONS=""
 CLI_PROVIDER=""
 CLI_MODEL=""
 CLI_WORKING_DIRECTORY=""
+CLI_SYSTEM_LOG_DIRECTORY=""
 CLI_FEATURE_ID=""
 
 # ── Logging ───────────────────────────────────────────────────────────
@@ -63,6 +65,8 @@ Options:
   --provider <name>         AI provider: claude-code or cursor-cli
   --model <id>              Model ID to use (e.g. claude-opus-4-6)
   --working-directory <dir> Working directory containing the repo
+  --system-log-directory <dir>
+                            Persistent system-level directory for retained agent logs
   --feature-id <id>         ADO Feature ID to process (optional; processes all if omitted)
 
 Environment variables:
@@ -76,20 +80,39 @@ Config file:
 EOF
 }
 
+require_option_value() {
+  local option="$1"
+  local value="${2-}"
+  if [ -z "$value" ] || [[ "$value" == --* ]]; then
+    echo "Error: $option requires a value." >&2
+    print_usage >&2
+    exit 1
+  fi
+}
+
+resolve_system_log_directory() {
+  case "$(uname -s)" in
+    Darwin) printf '%s\n' "${HOME}/Library/Logs/agent-loop" ;;
+    Linux)  printf '%s\n' "${XDG_STATE_HOME:-${HOME}/.local/state}/agent-loop/logs" ;;
+    *)      printf '%s\n' "${HOME}/.agent-loop/logs" ;;
+  esac
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --org)              CLI_ORG="$2";               shift 2 ;;
-    --project)          CLI_PROJECT="$2";           shift 2 ;;
-    --area-path)        CLI_AREA_PATH="$2";         shift 2 ;;
-    --team)             CLI_TEAM="$2";              shift 2 ;;
-    --process)          CLI_PROCESS="$2";           shift 2 ;;
-    --repo-url)         CLI_REPO_URL="$2";          shift 2 ;;
-    --base-branch)      CLI_BASE_BRANCH="$2";       shift 2 ;;
-    --max-iterations)   CLI_MAX_ITERATIONS="$2";    shift 2 ;;
-    --provider)         CLI_PROVIDER="$2";          shift 2 ;;
-    --model)            CLI_MODEL="$2";             shift 2 ;;
-    --working-directory) CLI_WORKING_DIRECTORY="$2"; shift 2 ;;
-    --feature-id)       CLI_FEATURE_ID="$2";        shift 2 ;;
+    --org)              require_option_value "$1" "${2-}"; CLI_ORG="$2";                shift 2 ;;
+    --project)          require_option_value "$1" "${2-}"; CLI_PROJECT="$2";            shift 2 ;;
+    --area-path)        require_option_value "$1" "${2-}"; CLI_AREA_PATH="$2";          shift 2 ;;
+    --team)             require_option_value "$1" "${2-}"; CLI_TEAM="$2";               shift 2 ;;
+    --process)          require_option_value "$1" "${2-}"; CLI_PROCESS="$2";            shift 2 ;;
+    --repo-url)         require_option_value "$1" "${2-}"; CLI_REPO_URL="$2";           shift 2 ;;
+    --base-branch)      require_option_value "$1" "${2-}"; CLI_BASE_BRANCH="$2";        shift 2 ;;
+    --max-iterations)   require_option_value "$1" "${2-}"; CLI_MAX_ITERATIONS="$2";     shift 2 ;;
+    --provider)         require_option_value "$1" "${2-}"; CLI_PROVIDER="$2";           shift 2 ;;
+    --model)            require_option_value "$1" "${2-}"; CLI_MODEL="$2";              shift 2 ;;
+    --working-directory) require_option_value "$1" "${2-}"; CLI_WORKING_DIRECTORY="$2"; shift 2 ;;
+    --system-log-directory) require_option_value "$1" "${2-}"; CLI_SYSTEM_LOG_DIRECTORY="$2"; shift 2 ;;
+    --feature-id)       require_option_value "$1" "${2-}"; CLI_FEATURE_ID="$2";         shift 2 ;;
     --help|-h)          print_usage; exit 0 ;;
     *)
       echo "Error: Unknown option: $1" >&2
@@ -101,8 +124,9 @@ done
 
 # ── Load config file ──────────────────────────────────────────────────
 # Resolve working directory: CLI > env > current directory
-WORKING_DIR="${CLI_WORKING_DIRECTORY:-${AGENT_LOOP_WORKING_DIRECTORY:-$(pwd)}}"
-CONFIG_FILE="$WORKING_DIR/.agent-loop.json"
+INITIAL_WORKING_DIR="${CLI_WORKING_DIRECTORY:-${AGENT_LOOP_WORKING_DIRECTORY:-$(pwd)}}"
+WORKING_DIR="$INITIAL_WORKING_DIR"
+CONFIG_FILE="$INITIAL_WORKING_DIR/.agent-loop.json"
 
 if [ -f "$CONFIG_FILE" ]; then
   if ! command -v jq &>/dev/null; then
@@ -121,6 +145,7 @@ if [ -f "$CONFIG_FILE" ]; then
   CONFIG_PROVIDER=$(jq -r '.provider // empty' "$CONFIG_FILE" 2>/dev/null || true)
   CONFIG_MODEL=$(jq -r '.model // empty' "$CONFIG_FILE" 2>/dev/null || true)
   CONFIG_WORKING_DIRECTORY=$(jq -r '.workingDirectory // empty' "$CONFIG_FILE" 2>/dev/null || true)
+  CONFIG_SYSTEM_LOG_DIRECTORY=$(jq -r '.systemLogDirectory // empty' "$CONFIG_FILE" 2>/dev/null || true)
   CONFIG_FEATURE_ID=$(jq -r '.featureId // empty' "$CONFIG_FILE" 2>/dev/null || true)
 fi
 
@@ -136,6 +161,8 @@ MAX_ITERATIONS="${CLI_MAX_ITERATIONS:-${CONFIG_MAX_ITERATIONS:-5}}"
 PROVIDER="${CLI_PROVIDER:-$CONFIG_PROVIDER}"
 MODEL="${CLI_MODEL:-$CONFIG_MODEL}"
 FEATURE_ID="${CLI_FEATURE_ID:-$CONFIG_FEATURE_ID}"
+WORKING_DIR="${CLI_WORKING_DIRECTORY:-${CONFIG_WORKING_DIRECTORY:-$INITIAL_WORKING_DIR}}"
+SYSTEM_LOG_DIR="${CLI_SYSTEM_LOG_DIRECTORY:-${CONFIG_SYSTEM_LOG_DIRECTORY:-${AGENT_LOOP_SYSTEM_LOG_DIR:-$(resolve_system_log_directory)}}}"
 
 # ── Validate required values ──────────────────────────────────────────
 ERRORS=()
@@ -158,6 +185,21 @@ fi
 # ── Validate provider value ───────────────────────────────────────────
 if [[ "$PROVIDER" != "claude-code" && "$PROVIDER" != "cursor-cli" ]]; then
   echo "Error: Invalid provider '$PROVIDER'. Must be 'claude-code' or 'cursor-cli'." >&2
+  exit 1
+fi
+
+if [[ ! "$MAX_ITERATIONS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Error: --max-iterations must be a positive integer." >&2
+  exit 1
+fi
+
+if [ ! -d "$WORKING_DIR" ]; then
+  echo "Error: working directory does not exist: $WORKING_DIR" >&2
+  exit 1
+fi
+
+if ! mkdir -p "$SYSTEM_LOG_DIR"; then
+  echo "Error: could not create system log directory: $SYSTEM_LOG_DIR" >&2
   exit 1
 fi
 
@@ -196,6 +238,7 @@ export AGENT_LOOP_MAX_ITERATIONS="$MAX_ITERATIONS"
 export AGENT_LOOP_PROVIDER="$PROVIDER"
 export AGENT_LOOP_MODEL="$MODEL"
 export AGENT_LOOP_WORKING_DIRECTORY="$WORKING_DIR"
+export AGENT_LOOP_SYSTEM_LOG_DIR="$SYSTEM_LOG_DIR"
 export AGENT_LOOP_FEATURE_ID="$FEATURE_ID"
 
 echo "══════════════════════════════════════════════════════"
@@ -209,21 +252,24 @@ echo "  Max iter/PBI:    $MAX_ITERATIONS"
 [ -n "$AREA_PATH" ]  && echo "  Area path:       $AREA_PATH"
 [ -n "$TEAM" ]       && echo "  Team:            $TEAM"
 [ -n "$REPO_URL" ]   && echo "  Repo URL:        $REPO_URL"
+echo "  System logs:     $SYSTEM_LOG_DIR"
 echo "══════════════════════════════════════════════════════"
 
 # ── Lock manager ──────────────────────────────────────────────────────
 LOCK_FILE="$WORKING_DIR/.agent-loop.lock"
+LOCK_ACQUIRED=false
 
 acquire_lock() {
   if ! ( set -o noclobber; echo "$$" > "$LOCK_FILE" ) 2>/dev/null; then
     log_warn "Another instance is already running (lock file exists: $LOCK_FILE). Exiting."
-    exit 0
+    return 1
   fi
+  LOCK_ACQUIRED=true
   log_info "Lock acquired: $LOCK_FILE"
 }
 
 release_lock() {
-  if [ -f "$LOCK_FILE" ]; then
+  if [ "$LOCK_ACQUIRED" = true ] && [ -f "$LOCK_FILE" ] && [ "$(tr -d '[:space:]' < "$LOCK_FILE" 2>/dev/null)" = "$$" ]; then
     rm -f "$LOCK_FILE"
     log_info "Lock released: $LOCK_FILE"
   fi
@@ -231,6 +277,7 @@ release_lock() {
 
 # ── Context manager ───────────────────────────────────────────────────
 AGENT_CONTEXT_DIR="$WORKING_DIR/.agent-context"
+CURRENT_FEATURE_LOG_FILE=""
 
 ensure_gitignore() {
   local gitignore="$WORKING_DIR/.gitignore"
@@ -256,6 +303,33 @@ capture_agent_log() {
   local output="$2"
   mkdir -p "$AGENT_CONTEXT_DIR/logs"
   printf '%s\n' "$output" >> "$AGENT_CONTEXT_DIR/logs/feature-${feature_id}.log"
+  if [ -n "$CURRENT_FEATURE_LOG_FILE" ]; then
+    printf '%s\n' "$output" >> "$CURRENT_FEATURE_LOG_FILE"
+  fi
+}
+
+start_feature_log() {
+  local feature_id="$1"
+  local feature_title="$2"
+  local timestamp
+  timestamp=$(date -u '+%Y%m%dT%H%M%SZ')
+  CURRENT_FEATURE_LOG_FILE="$SYSTEM_LOG_DIR/feature-${feature_id}-${timestamp}.log"
+  {
+    printf 'Feature ID: %s\n' "$feature_id"
+    printf 'Feature Title: %s\n' "$feature_title"
+    printf 'Started At (UTC): %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')"
+    printf 'Working Directory: %s\n' "$WORKING_DIR"
+    printf 'Provider: %s%s\n' "$PROVIDER" "${MODEL:+ ($MODEL)}"
+    printf '\n'
+  } >> "$CURRENT_FEATURE_LOG_FILE"
+  log_info "Persistent agent log: $CURRENT_FEATURE_LOG_FILE"
+}
+
+append_feature_log_note() {
+  local message="$1"
+  if [ -n "$CURRENT_FEATURE_LOG_FILE" ]; then
+    printf '[%s] %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')" "$message" >> "$CURRENT_FEATURE_LOG_FILE"
+  fi
 }
 
 cleanup() {
@@ -319,7 +393,8 @@ _ado_call() {
 query_eligible_features() {
   local wiql="SELECT [System.Id] FROM WorkItemLinks WHERE [Source].[System.WorkItemType] = 'Feature'"
   if [ -n "$AREA_PATH" ]; then
-    wiql+=" AND [Source].[System.AreaPath] UNDER '$AREA_PATH'"
+    local escaped_area_path=${AREA_PATH//\'/\'\'}
+    wiql+=" AND [Source].[System.AreaPath] UNDER '$escaped_area_path'"
   fi
   wiql+=" AND [Target].[System.Tags] CONTAINS 'ready-for-agent' AND [Target].[System.State] = 'New' AND [System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward' MODE (MustContain)"
 
@@ -399,7 +474,7 @@ update_work_item_state() {
   local state="$2"
 
   local payload
-  payload=$(jq -n --arg s "$state" '[{"op":"add","path":"/fields/System.State","value":$s}]')
+  payload=$(jq -n --arg s "$state" '[{"op":"replace","path":"/fields/System.State","value":$s}]')
 
   local url="${ORG}/${PROJECT}/_apis/wit/workitems/${work_item_id}?api-version=7.1"
   _ado_call PATCH "$url" "$payload" "application/json-patch+json" || return 1
@@ -420,14 +495,20 @@ add_work_item_tag() {
   current_tags=$(echo "$work_item" | jq -r '.fields["System.Tags"] // ""')
 
   local new_tags
+  local op="replace"
+  if printf '%s' "$current_tags" | jq -Rr --arg tag "$tag" 'split(";") | map(gsub("^\\s+|\\s+$"; "")) | any(. == $tag)' | grep -qx 'true'; then
+    log_info "Tag '$tag' already present on work item $work_item_id"
+    return 0
+  fi
   if [ -z "$current_tags" ]; then
     new_tags="$tag"
+    op="add"
   else
     new_tags="${current_tags}; ${tag}"
   fi
 
   local payload
-  payload=$(jq -n --arg t "$new_tags" '[{"op":"add","path":"/fields/System.Tags","value":$t}]')
+  payload=$(jq -n --arg op "$op" --arg t "$new_tags" '[{"op":$op,"path":"/fields/System.Tags","value":$t}]')
 
   local url="${ORG}/${PROJECT}/_apis/wit/workitems/${work_item_id}?api-version=7.1"
   _ado_call PATCH "$url" "$payload" "application/json-patch+json" || return 1
@@ -697,7 +778,9 @@ check_clean_and_pushed() {
 
 trap 'release_lock; cleanup' EXIT
 
-acquire_lock
+cd "$WORKING_DIR"
+
+acquire_lock || exit 0
 ensure_gitignore
 
 # Resolve base branch early (auto-detect if not configured) so it is
@@ -706,6 +789,7 @@ BASE_BRANCH=$(detect_default_branch) || {
   log_error "Failed to determine base branch"
   exit 1
 }
+export AGENT_LOOP_BASE_BRANCH="$BASE_BRANCH"
 log_info "Base branch resolved to '$BASE_BRANCH'"
 
 # ── Agent dispatcher ───────────────────────────────────────────────────
@@ -720,18 +804,25 @@ build_prompt() {
   local pbi_description="$2"
   local acceptance_criteria="$3"
 
-  cat <<PROMPT
+  cat <<'PROMPT'
 You are an autonomous software development agent implementing a Product Backlog Item (PBI).
 
 ## PBI Details
 
-**Title:** ${pbi_title}
+**Title:**
+PROMPT
+  printf '%s\n\n' "$pbi_title"
+  cat <<'PROMPT'
 
 **Description:**
-${pbi_description}
+PROMPT
+  printf '%s\n\n' "$pbi_description"
+  cat <<'PROMPT'
 
 **Acceptance Criteria:**
-${acceptance_criteria}
+PROMPT
+  printf '%s\n\n' "$acceptance_criteria"
+  cat <<'PROMPT'
 
 ## Feature Context
 
@@ -785,7 +876,7 @@ invoke_agent() {
 
   AGENT_INVOKE_EXIT_CODE=$exit_code
 
-  if printf '%s' "$output" | grep -qF 'AGENT_COMPLETE'; then
+  if printf '%s\n' "$output" | grep -qx 'AGENT_COMPLETE'; then
     AGENT_INVOKE_COMPLETED="true"
   fi
 
@@ -831,6 +922,7 @@ process_pbi() {
   prompt=$(build_prompt "$pbi_title" "$pbi_description" "$acceptance_criteria")
 
   local iteration=1
+  local failure_reason="did not complete within $MAX_ITERATIONS iteration(s)"
   while [ "$iteration" -le "$MAX_ITERATIONS" ]; do
     log_info "Iteration ${iteration}/${MAX_ITERATIONS} for PBI ${pbi_id}"
 
@@ -850,13 +942,14 @@ process_pbi() {
     # If the agent process itself errored, stop retrying immediately.
     if [ "$AGENT_INVOKE_EXIT_CODE" -ne 0 ]; then
       log_error "process_pbi: agent exited with code $AGENT_INVOKE_EXIT_CODE on iteration $iteration — stopping"
+      failure_reason="stopped after agent exit code $AGENT_INVOKE_EXIT_CODE on iteration $iteration"
       break
     fi
 
     iteration=$((iteration + 1))
   done
 
-  log_error "process_pbi: PBI $pbi_id did not complete within $MAX_ITERATIONS iteration(s)"
+  log_error "process_pbi: PBI $pbi_id $failure_reason"
   add_work_item_tag "$pbi_id" "agent-failed" || log_warn "process_pbi: failed to tag PBI $pbi_id as agent-failed"
   return 1
 }
@@ -895,10 +988,18 @@ else
   }
 fi
 
+FEATURE_TYPE=$(printf '%s' "$FEATURE_JSON" | jq -r '.fields["System.WorkItemType"] // ""')
+if [ "$FEATURE_TYPE" != "Feature" ]; then
+  log_error "Work item $FEATURE_ID is a '$FEATURE_TYPE', not a Feature"
+  exit 1
+fi
+
 FEATURE_TITLE=$(printf '%s' "$FEATURE_JSON" | jq -r '.fields["System.Title"] // ""')
 FEATURE_DESCRIPTION=$(printf '%s' "$FEATURE_JSON" | jq -r '.fields["System.Description"] // ""')
 
 log_info "Processing Feature $FEATURE_ID: $FEATURE_TITLE"
+start_feature_log "$FEATURE_ID" "$FEATURE_TITLE"
+append_feature_log_note "Feature processing started"
 
 # Step 5: Fetch all child PBIs
 log_info "Fetching child PBIs for Feature $FEATURE_ID"
@@ -909,7 +1010,10 @@ PBIS_JSON=$(get_child_pbis "$FEATURE_ID") || {
 
 # Filter to only PBIs tagged "ready-for-agent" in "New" state.
 PBIS_JSON=$(printf '%s' "$PBIS_JSON" | jq '[.[] | select(
-  ((.fields["System.Tags"] // "") | contains("ready-for-agent"))
+  ((.fields["System.Tags"] // "")
+    | split(";")
+    | map(gsub("^\\s+|\\s+$"; ""))
+    | any(. == "ready-for-agent"))
   and .fields["System.State"] == "New"
 )]')
 
@@ -965,11 +1069,14 @@ if [ "$FEATURE_SUCCESS" = "true" ]; then
   log_info "All PBIs completed — creating pull request for Feature $FEATURE_ID"
   PR_URL=$(create_pull_request "$FEATURE_TITLE" "$FEATURE_BRANCH" "$SORTED_PBIS") || {
     log_error "Failed to create pull request for Feature $FEATURE_ID"
+    append_feature_log_note "Failed to create pull request"
     exit 1
   }
+  append_feature_log_note "Feature completed successfully. Pull request: $PR_URL"
   log_info "Feature $FEATURE_ID complete — PR: $PR_URL"
   exit 0
 else
+  append_feature_log_note "Feature processing failed"
   log_error "Feature $FEATURE_ID processing failed — one or more PBIs did not complete"
   exit 1
 fi

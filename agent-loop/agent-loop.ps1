@@ -62,6 +62,7 @@ param(
     [string] $Provider,
     [string] $Model,
     [string] $WorkingDirectory,
+    [string] $SystemLogDirectory,
     [string] $FeatureId
 )
 
@@ -78,13 +79,30 @@ function log_info {
 function log_warn {
     param([string]$Message)
     $ts = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')
-    Write-Error "[$ts] [WARN] $Message"
+    Write-Warning "[$ts] [WARN] $Message"
 }
 
 function log_error {
     param([string]$Message)
     $ts = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')
     Write-Error "[$ts] [ERROR] $Message"
+}
+
+function Get-DefaultSystemLogDirectory {
+    if ($IsMacOS) {
+        return (Join-Path $HOME 'Library/Logs/agent-loop')
+    }
+
+    if ($IsLinux) {
+        $stateHome = if ($env:XDG_STATE_HOME) { $env:XDG_STATE_HOME } else { Join-Path $HOME '.local/state' }
+        return (Join-Path $stateHome 'agent-loop/logs')
+    }
+
+    if ($env:LOCALAPPDATA) {
+        return (Join-Path $env:LOCALAPPDATA 'agent-loop/logs')
+    }
+
+    return (Join-Path $HOME '.agent-loop/logs')
 }
 
 # ── Load config file ──────────────────────────────────────────────────
@@ -114,6 +132,7 @@ if (Test-Path $configFile) {
         if ($null -ne $json.provider)        { $fileConfig['Provider']         = $json.provider }
         if ($null -ne $json.model)           { $fileConfig['Model']            = $json.model }
         if ($null -ne $json.workingDirectory) { $fileConfig['WorkingDirectory'] = $json.workingDirectory }
+        if ($null -ne $json.systemLogDirectory) { $fileConfig['SystemLogDirectory'] = $json.systemLogDirectory }
         if ($null -ne $json.featureId)       { $fileConfig['FeatureId']        = [string]$json.featureId }
     } catch {
         Write-Error "Error: Failed to parse ${configFile}: $_"
@@ -140,6 +159,15 @@ $resolvedMaxIterations  = Resolve-Value $MaxIterations 'MaxIterations' 5
 $resolvedProvider       = Resolve-Value $Provider      'Provider'
 $resolvedModel          = Resolve-Value $Model         'Model'
 $resolvedFeatureId      = Resolve-Value $FeatureId     'FeatureId'
+$resolvedSystemLogDir   = Resolve-Value $SystemLogDirectory 'SystemLogDirectory'
+
+if (-not $WorkingDirectory -and -not $env:AGENT_LOOP_WORKING_DIRECTORY -and $fileConfig.ContainsKey('WorkingDirectory') -and $fileConfig['WorkingDirectory']) {
+    $resolvedWorkingDir = $fileConfig['WorkingDirectory']
+}
+
+if (-not $resolvedSystemLogDir) {
+    $resolvedSystemLogDir = if ($env:AGENT_LOOP_SYSTEM_LOG_DIR) { $env:AGENT_LOOP_SYSTEM_LOG_DIR } else { Get-DefaultSystemLogDirectory }
+}
 
 # ── Validate required values ──────────────────────────────────────────
 $errors = [System.Collections.Generic.List[string]]::new()
@@ -164,6 +192,24 @@ if ($resolvedProvider -notin @('claude-code', 'cursor-cli')) {
     Write-Host "Error: Invalid provider '$resolvedProvider'. Must be 'claude-code' or 'cursor-cli'." -ForegroundColor Red
     exit 1
 }
+
+if ($resolvedMaxIterations -lt 1) {
+    Write-Host 'Error: -MaxIterations must be a positive integer.' -ForegroundColor Red
+    exit 1
+}
+
+if (-not (Test-Path $resolvedWorkingDir -PathType Container)) {
+    Write-Host "Error: working directory does not exist: $resolvedWorkingDir" -ForegroundColor Red
+    exit 1
+}
+
+$resolvedWorkingDir = (Resolve-Path $resolvedWorkingDir).Path
+
+if (-not (Test-Path $resolvedSystemLogDir -PathType Container)) {
+    New-Item -ItemType Directory -Path $resolvedSystemLogDir -Force | Out-Null
+}
+
+$resolvedSystemLogDir = (Resolve-Path $resolvedSystemLogDir).Path
 
 # ── Validate environment variables ───────────────────────────────────
 $envErrors = [System.Collections.Generic.List[string]]::new()
@@ -200,6 +246,7 @@ $env:AGENT_LOOP_MAX_ITERATIONS    = $resolvedMaxIterations
 $env:AGENT_LOOP_PROVIDER          = $resolvedProvider
 $env:AGENT_LOOP_MODEL             = $resolvedModel
 $env:AGENT_LOOP_WORKING_DIRECTORY = $resolvedWorkingDir
+$env:AGENT_LOOP_SYSTEM_LOG_DIR    = $resolvedSystemLogDir
 $env:AGENT_LOOP_FEATURE_ID        = $resolvedFeatureId
 
 $modelLabel = if ($resolvedModel) { " ($resolvedModel)" } else { '' }
@@ -217,25 +264,32 @@ if ($resolvedFeatureId) { Write-Host "  Feature ID:      $resolvedFeatureId" }
 if ($resolvedAreaPath)  { Write-Host "  Area path:       $resolvedAreaPath" }
 if ($resolvedTeam)      { Write-Host "  Team:            $resolvedTeam" }
 if ($resolvedRepoUrl)   { Write-Host "  Repo URL:        $resolvedRepoUrl" }
+Write-Host "  System logs:     $resolvedSystemLogDir"
 Write-Host ('=' * 54)
 
 # ── Lock manager ──────────────────────────────────────────────────────
 $lockFile = Join-Path $resolvedWorkingDir '.agent-loop.lock'
+$script:lockAcquired = $false
 
 function Acquire-Lock {
     try {
         $stream = [System.IO.File]::Open($lockFile, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
-        $stream.Close()
+        $writer = [System.IO.StreamWriter]::new($stream)
+        $writer.Write([string]$PID)
+        $writer.Flush()
+        $writer.Dispose()
         $stream.Dispose()
     } catch {
         log_warn "Another instance is already running (lock file exists: $lockFile). Exiting."
-        exit 0
+        return $false
     }
+    $script:lockAcquired = $true
     log_info "Lock acquired: $lockFile"
+    return $true
 }
 
 function Release-Lock {
-    if (Test-Path $lockFile) {
+    if ($script:lockAcquired -and (Test-Path $lockFile) -and ((Get-Content $lockFile -Raw).Trim() -eq [string]$PID)) {
         Remove-Item -Force $lockFile
         log_info "Lock released: $lockFile"
     }
@@ -243,6 +297,7 @@ function Release-Lock {
 
 # ── Context manager ───────────────────────────────────────────────────
 $agentContextDir = Join-Path $resolvedWorkingDir '.agent-context'
+$script:currentFeatureLogFile = $null
 
 function Ensure-Gitignore {
     $gitignore = Join-Path $resolvedWorkingDir '.gitignore'
@@ -267,6 +322,31 @@ function Capture-AgentLog {
     $logsDir = Join-Path $agentContextDir 'logs'
     if (-not (Test-Path $logsDir)) { New-Item -ItemType Directory -Path $logsDir -Force | Out-Null }
     Add-Content -Path (Join-Path $logsDir "feature-${FeatureId}.log") -Value $Output
+    if ($script:currentFeatureLogFile) {
+        Add-Content -Path $script:currentFeatureLogFile -Value $Output
+    }
+}
+
+function Start-FeatureLog {
+    param([string]$FeatureId, [string]$FeatureTitle)
+    $timestamp = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+    $script:currentFeatureLogFile = Join-Path $resolvedSystemLogDir "feature-${FeatureId}-${timestamp}.log"
+    @(
+        "Feature ID: $FeatureId"
+        "Feature Title: $FeatureTitle"
+        "Started At (UTC): $((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss'))"
+        "Working Directory: $resolvedWorkingDir"
+        "Provider: $resolvedProvider$((if ($resolvedModel) { " ($resolvedModel)" } else { '' }))"
+        ''
+    ) | Set-Content -Path $script:currentFeatureLogFile
+    log_info "Persistent agent log: $($script:currentFeatureLogFile)"
+}
+
+function Add-FeatureLogNote {
+    param([string]$Message)
+    if ($script:currentFeatureLogFile) {
+        Add-Content -Path $script:currentFeatureLogFile -Value "[$((Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss'))] $Message"
+    }
 }
 
 function Invoke-Cleanup {
@@ -306,8 +386,8 @@ function Invoke-AdoApi {
             return Invoke-RestMethod -Method $Method -Uri $Url -Headers $headers
         }
     } catch {
-        $statusCode = $_.Exception.Response.StatusCode.value__
-        $errorBody  = $_.ErrorDetails.Message
+        $statusCode = if ($_.Exception.Response) { $_.Exception.Response.StatusCode.value__ } else { 'n/a' }
+        $errorBody  = if ($_.ErrorDetails -and $_.ErrorDetails.Message) { $_.ErrorDetails.Message } else { $_.Exception.Message }
         log_error "ADO API error: HTTP $statusCode — $Method $Url"
         log_error "Response: $errorBody"
         throw
@@ -320,7 +400,8 @@ function Invoke-AdoApi {
 function Get-EligibleFeatures {
     $wiql = "SELECT [System.Id] FROM WorkItemLinks WHERE [Source].[System.WorkItemType] = 'Feature'"
     if ($resolvedAreaPath) {
-        $wiql += " AND [Source].[System.AreaPath] UNDER '$resolvedAreaPath'"
+        $escapedAreaPath = $resolvedAreaPath -replace "'", "''"
+        $wiql += " AND [Source].[System.AreaPath] UNDER '$escapedAreaPath'"
     }
     $wiql += " AND [Target].[System.Tags] CONTAINS 'ready-for-agent' AND [Target].[System.State] = 'New' AND [System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward' MODE (MustContain)"
 
@@ -397,7 +478,7 @@ function Update-WorkItemState {
         [string] $State
     )
     $patchDoc = @(
-        @{ op = 'add'; path = '/fields/System.State'; value = $State }
+        @{ op = 'replace'; path = '/fields/System.State'; value = $State }
     ) | ConvertTo-Json -Compress
     $url = "$resolvedOrg/$resolvedProject/_apis/wit/workitems/${WorkItemId}?api-version=7.1"
     Invoke-AdoApi -Method PATCH -Url $url -Body $patchDoc -ContentType 'application/json-patch+json' | Out-Null
@@ -414,10 +495,16 @@ function Add-WorkItemTag {
     # Fetch current tags so we can append rather than overwrite.
     $workItem    = Get-WorkItem -WorkItemId $WorkItemId
     $currentTags = $workItem.fields.'System.Tags'
+    $tagList     = if ($currentTags) { @($currentTags -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ }) } else { @() }
+    if ($tagList -contains $Tag) {
+        log_info "Tag '$Tag' already present on work item $WorkItemId"
+        return
+    }
     $newTags     = if ($currentTags) { "$currentTags; $Tag" } else { $Tag }
+    $op          = if ($currentTags) { 'replace' } else { 'add' }
 
     $patchDoc = @(
-        @{ op = 'add'; path = '/fields/System.Tags'; value = $newTags }
+        @{ op = $op; path = '/fields/System.Tags'; value = $newTags }
     ) | ConvertTo-Json -Compress
     $url = "$resolvedOrg/$resolvedProject/_apis/wit/workitems/${WorkItemId}?api-version=7.1"
     Invoke-AdoApi -Method PATCH -Url $url -Body $patchDoc -ContentType 'application/json-patch+json' | Out-Null
@@ -726,20 +813,20 @@ function Invoke-Agent {
                     --output-format json `
                     @modelArgs `
                     --allowedTools 'Read,Write,Edit,Bash' 2>&1 | Out-String
+                $exitCode = $LASTEXITCODE
             } catch {
                 $output   = $_.Exception.Message
                 $exitCode = 1
             }
-            $exitCode = $LASTEXITCODE
         }
         'cursor-cli' {
             try {
                 $output = & agent -p $Prompt --force --output-format json 2>&1 | Out-String
+                $exitCode = $LASTEXITCODE
             } catch {
                 $output   = $_.Exception.Message
                 $exitCode = 1
             }
-            $exitCode = $LASTEXITCODE
         }
         default {
             $msg = "Invoke-Agent: unknown provider '$resolvedProvider'. Must be 'claude-code' or 'cursor-cli'."
@@ -748,7 +835,7 @@ function Invoke-Agent {
         }
     }
 
-    $completed = $output -match 'AGENT_COMPLETE'
+    $completed = $output -match '(?m)^AGENT_COMPLETE$'
 
     if ($exitCode -ne 0) {
         log_error "Invoke-Agent: agent exited with non-zero exit code $exitCode"
@@ -825,12 +912,17 @@ function Invoke-ProcessPbi {
 }
 
 try {
-    Acquire-Lock
+    Set-Location $resolvedWorkingDir
+
+    if (-not (Acquire-Lock)) {
+        exit 0
+    }
     Ensure-Gitignore
 
     # Resolve base branch early (auto-detect if not configured) so it is
     # available to both New-FeatureBranch and New-PullRequest.
     $resolvedBaseBranch = Get-DefaultBranch
+    $env:AGENT_LOOP_BASE_BRANCH = $resolvedBaseBranch
     log_info "Base branch resolved to '$resolvedBaseBranch'"
 
     # ── Orchestrator ──────────────────────────────────────────────────────
@@ -856,10 +948,18 @@ try {
         $featureJson = Get-WorkItem -WorkItemId $featureId
     }
 
+    $featureType = [string]$featureJson.fields.'System.WorkItemType'
+    if ($featureType -ne 'Feature') {
+        log_error "Work item $featureId is a '$featureType', not a Feature"
+        exit 1
+    }
+
     $featureTitle       = $featureJson.fields.'System.Title'
     $featureDescription = $featureJson.fields.'System.Description'
 
     log_info "Processing Feature ${featureId}: $featureTitle"
+    Start-FeatureLog -FeatureId $featureId -FeatureTitle $featureTitle
+    Add-FeatureLogNote -Message 'Feature processing started'
 
     # Step 5: Fetch all child PBIs
     log_info "Fetching child PBIs for Feature $featureId"
@@ -867,9 +967,13 @@ try {
 
     # Filter to only PBIs tagged "ready-for-agent" in "New" state.
     $pbis = @($pbis | Where-Object {
-        $tags  = $_.fields.'System.Tags'
+        $tagList = if ($_.fields.'System.Tags') {
+            @($_.fields.'System.Tags' -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        } else {
+            @()
+        }
         $state = $_.fields.'System.State'
-        ($tags -and $tags -match 'ready-for-agent') -and ($state -eq 'New')
+        (($tagList -contains 'ready-for-agent') -and ($state -eq 'New'))
     })
 
     if ($pbis.Count -eq 0) {
@@ -920,10 +1024,17 @@ try {
     # Step 11: Create PR only when all PBIs are tagged agent-done
     if ($featureSuccess) {
         log_info "All PBIs completed — creating pull request for Feature $featureId"
-        $prUrl = New-PullRequest -FeatureTitle $featureTitle -FeatureBranch $featureBranch -Pbis $sortedPbis
+        try {
+            $prUrl = New-PullRequest -FeatureTitle $featureTitle -FeatureBranch $featureBranch -Pbis $sortedPbis
+        } catch {
+            Add-FeatureLogNote -Message 'Failed to create pull request'
+            throw
+        }
+        Add-FeatureLogNote -Message "Feature completed successfully. Pull request: $prUrl"
         log_info "Feature $featureId complete — PR: $prUrl"
         exit 0
     } else {
+        Add-FeatureLogNote -Message 'Feature processing failed'
         log_error "Feature $featureId processing failed — one or more PBIs did not complete"
         exit 1
     }

@@ -10,5 +10,6 @@
   "provider": "claude-code",
   "model": "claude-opus-4-6",
   "workingDirectory": "/path/to/your/repo",
+  "systemLogDirectory": "/path/to/system/log/directory",
   "pollIntervalSeconds": 300
 }
