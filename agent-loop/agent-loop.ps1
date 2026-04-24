@@ -820,14 +820,23 @@ function Sort-PbisByDependency {
         $indeg[$id] = 0
     }
 
-    # Dependency-Forward on a PBI means "this PBI is a predecessor of the
-    # linked item" → edge: src → tgt (src must execute before tgt).
+    # Build edges from both link directions:
+    #   Dependency-Forward on PBI A → B means "A is a predecessor of B" → edge A → B
+    #   Dependency-Reverse on PBI B → A means "A is a predecessor of B" → edge A → B
     foreach ($pbi in $Pbis) {
-        $src  = [string]$pbi.id
+        $id   = [string]$pbi.id
         $rels = if ($null -ne $pbi.relations) { @($pbi.relations) } else { @() }
         foreach ($rel in $rels) {
-            if ($rel.rel -ne 'System.LinkTypes.Dependency-Forward') { continue }
-            $tgt = ($rel.url -split '/')[-1]
+            if ($rel.rel -eq 'System.LinkTypes.Dependency-Forward') {
+                $src = $id
+                $tgt = ($rel.url -split '/')[-1]
+            } elseif ($rel.rel -eq 'System.LinkTypes.Dependency-Reverse') {
+                $tgt = $id
+                $src = ($rel.url -split '/')[-1]
+            } else {
+                continue
+            }
+            if (-not $idSet.ContainsKey($src)) { continue }
             if (-not $idSet.ContainsKey($tgt)) { continue }
             if ($adj[$src].Contains($tgt))     { continue }  # deduplicate
             $adj[$src].Add($tgt)
@@ -1173,8 +1182,8 @@ function Invoke-Agent {
         }
     }
 
-    $completed = Test-AgentSignal -Output $output -Pattern '(?m)^\s*(AGENT_DONE|AGENT_COMPLETE)\s*$'
-    $blocked   = Test-AgentSignal -Output $output -Pattern '(?m)^\s*AGENT_BLOCKED\s*$'
+    $completed = Test-AgentSignal -Output $output -Pattern '(?m)(?:^|\b)\s*(AGENT_DONE|AGENT_COMPLETE)\s*$'
+    $blocked   = Test-AgentSignal -Output $output -Pattern '(?m)(?:^|\b)\s*AGENT_BLOCKED\s*$'
 
     if ($exitCode -ne 0) {
         log_error "Invoke-Agent: agent exited with non-zero exit code $exitCode"
@@ -1229,9 +1238,9 @@ function Invoke-ProcessPbi {
     }
 
     if ($result.Blocked) {
-        log_error "Invoke-ProcessPbi: agent reported PBI $PbiId is blocked"
-        try { Add-WorkItemTag -WorkItemId $PbiId -Tag 'agent-failed' } catch { log_warn "Invoke-ProcessPbi: failed to tag PBI $PbiId as agent-failed" }
-        return $false
+        log_warn "Invoke-ProcessPbi: agent reported PBI $PbiId is blocked"
+        try { Add-WorkItemTag -WorkItemId $PbiId -Tag 'agent-blocked' } catch { log_warn "Invoke-ProcessPbi: failed to tag PBI $PbiId as agent-blocked" }
+        return 'blocked'
     }
 
     if ($result.Completed -and (Test-CleanAndPushed -FeatureBranch $FeatureBranch)) {
@@ -1330,7 +1339,7 @@ try {
         } else {
             @()
         }
-        (-not ($tagList -contains 'agent-done'))
+        (-not ($tagList -contains 'agent-done')) -and (-not ($tagList -contains 'agent-blocked'))
     })
 
     $pbis = @($remainingReadyForAgentPbis | Where-Object {
@@ -1341,7 +1350,7 @@ try {
             @()
         }
         $state = Get-WorkItemFieldValue -Fields $_.fields -FieldName 'System.State' -DefaultValue ''
-        (($tagList -contains 'ready-for-agent') -and (-not ($tagList -contains 'agent-done')) -and ($runnableStates -contains $state))
+        (($tagList -contains 'ready-for-agent') -and (-not ($tagList -contains 'agent-done')) -and (-not ($tagList -contains 'agent-blocked')) -and ($runnableStates -contains $state))
     })
 
     log_info "Sorting PR PBIs by dependency order"
@@ -1384,7 +1393,7 @@ try {
 
         log_info "Starting PBI ${pbiId}: $pbiTitle"
 
-        $ok = Invoke-ProcessPbi `
+        $pbiResult = Invoke-ProcessPbi `
             -PbiId              $pbiId `
             -PbiTitle           ($pbiTitle       ?? '') `
             -PbiDescription     ($pbiDescription ?? '') `
@@ -1392,7 +1401,12 @@ try {
             -FeatureBranch      $featureBranch `
             -FeatureId          $featureId
 
-        if (-not $ok) {
+        if ($pbiResult -eq 'blocked') {
+            log_warn "PBI $pbiId blocked — skipping and continuing with remaining PBIs"
+            continue
+        }
+
+        if (-not $pbiResult) {
             log_error "PBI $pbiId failed — skipping remaining PBIs for Feature $featureId"
             $featureSuccess = $false
             break
@@ -1411,7 +1425,7 @@ try {
             } else {
                 @()
             }
-            ($tagList -contains 'ready-for-agent') -and (-not ($tagList -contains 'agent-done'))
+            ($tagList -contains 'ready-for-agent') -and (-not ($tagList -contains 'agent-done')) -and (-not ($tagList -contains 'agent-blocked'))
         })
 
         if ($remainingReadyForAgentPbis.Count -eq 0) {
