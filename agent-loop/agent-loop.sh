@@ -61,7 +61,7 @@ Options:
   --process <template>      Process template: Scrum, Agile, or CMMI
   --repo-url <url>          Git repository URL
   --base-branch <branch>    Base branch (auto-detected from git if omitted)
-  --max-iterations <n>      Max agent invocations per PBI (default: 5)
+  --max-iterations <n>      Max PBIs to process this run (default: 1)
   --provider <name>         AI provider: claude-code, cursor, or cursor-cli
   --model <id>              Model ID to use (e.g. claude-opus-4-6)
   --working-directory <dir> Working directory containing the repo
@@ -203,7 +203,7 @@ TEAM="${CLI_TEAM:-$CONFIG_TEAM}"
 PROCESS="${CLI_PROCESS:-$CONFIG_PROCESS}"
 REPO_URL="${CLI_REPO_URL:-$CONFIG_REPO_URL}"
 BASE_BRANCH="${CLI_BASE_BRANCH:-${CONFIG_BASE_BRANCH:-}}"
-MAX_ITERATIONS="${CLI_MAX_ITERATIONS:-${CONFIG_MAX_ITERATIONS:-5}}"
+MAX_ITERATIONS="${CLI_MAX_ITERATIONS:-${CONFIG_MAX_ITERATIONS:-1}}"
 PROVIDER="$(normalize_provider_name "${CLI_PROVIDER:-$CONFIG_PROVIDER}")"
 MODEL="${CLI_MODEL:-$CONFIG_MODEL}"
 FEATURE_ID="${CLI_FEATURE_ID:-$CONFIG_FEATURE_ID}"
@@ -301,7 +301,7 @@ echo "  Org:             $ORG"
 echo "  Project:         $PROJECT"
 echo "  Provider:        $PROVIDER${MODEL:+ ($MODEL)}"
 echo "  Base branch:     ${BASE_BRANCH:-(auto-detect)}"
-echo "  Max iter/PBI:    $MAX_ITERATIONS"
+echo "  Max PBIs/run:    $MAX_ITERATIONS"
 [ -n "$FEATURE_ID" ] && echo "  Feature ID:      $FEATURE_ID"
 [ -n "$AREA_PATH" ]  && echo "  Area path:       $AREA_PATH"
 [ -n "$TEAM" ]       && echo "  Team:            $TEAM"
@@ -331,17 +331,30 @@ release_lock() {
 
 # ── Context manager ───────────────────────────────────────────────────
 AGENT_CONTEXT_DIR="$WORKING_DIR/.agent-context"
+PROGRESS_FILE="$WORKING_DIR/progress.txt"
 CURRENT_FEATURE_LOG_FILE=""
 
 ensure_gitignore() {
   local gitignore="$WORKING_DIR/.gitignore"
-  local entries=('.agent-context/' '.agent-loop.lock')
+  local entries=('.agent-context/' '.agent-loop.lock' 'progress.txt')
   for entry in "${entries[@]}"; do
     if [ ! -f "$gitignore" ] || ! grep -qxF "$entry" "$gitignore"; then
       echo "$entry" >> "$gitignore"
       log_info "$entry added to .gitignore"
     fi
   done
+}
+
+ensure_progress_file() {
+  if [ ! -f "$PROGRESS_FILE" ]; then
+    {
+      printf '# Ralph Loop Progress Log\n'
+      printf '# Repo: %s\n' "$(basename "$WORKING_DIR")"
+      printf '# Started: %s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+      printf '\n'
+    } > "$PROGRESS_FILE"
+    log_info "Progress file initialized: $PROGRESS_FILE"
+  fi
 }
 
 write_feature_context() {
@@ -442,15 +455,18 @@ _ado_call() {
 }
 
 # Queries ADO for Features that have at least one child PBI tagged
-# "ready-for-agent" in "New" state, scoped to the configured areaPath.
+# "ready-for-agent", not tagged "agent-done", and still in a runnable state,
+# scoped to the configured areaPath.
 # Prints one Feature ID per line.
 query_eligible_features() {
   local wiql="SELECT [System.Id] FROM WorkItemLinks WHERE [Source].[System.WorkItemType] = 'Feature'"
+  local in_progress_state
+  in_progress_state=$(get_in_progress_state)
   if [ -n "$AREA_PATH" ]; then
     local escaped_area_path=${AREA_PATH//\'/\'\'}
     wiql+=" AND [Source].[System.AreaPath] UNDER '$escaped_area_path'"
   fi
-  wiql+=" AND [Target].[System.Tags] CONTAINS 'ready-for-agent' AND [Target].[System.State] = 'New' AND [System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward' MODE (MustContain)"
+  wiql+=" AND [Target].[System.Tags] CONTAINS 'ready-for-agent' AND [Target].[System.Tags] NOT CONTAINS 'agent-done' AND ([Target].[System.State] = 'New' OR [Target].[System.State] = '$in_progress_state') AND [System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward' MODE (MustContain)"
 
   local payload
   payload=$(jq -n --arg q "$wiql" '{"query": $q}')
@@ -913,6 +929,7 @@ cd "$WORKING_DIR"
 
 acquire_lock || exit 0
 ensure_gitignore
+ensure_progress_file
 
 # Resolve base branch early (auto-detect if not configured) so it is
 # available to both create_feature_branch and create_pull_request.
@@ -926,19 +943,25 @@ log_info "Base branch resolved to '$BASE_BRANCH'"
 # ── Agent dispatcher ───────────────────────────────────────────────────
 
 # Assembles the prompt that will be sent to the AI agent.
-# The prompt includes PBI title, description, and acceptance criteria,
-# plus instructions to read feature context and signal completion.
-# Usage: build_prompt <pbi_title> <pbi_description> <acceptance_criteria>
+# The prompt includes the exact PBI scope plus strict instructions to keep
+# changes minimal and signal a clear terminal state.
+# Usage: build_prompt <pbi_id> <pbi_title> <pbi_description> <acceptance_criteria>
 # Prints the assembled prompt string.
 build_prompt() {
-  local pbi_title="$1"
-  local pbi_description="$2"
-  local acceptance_criteria="$3"
+  local pbi_id="$1"
+  local pbi_title="$2"
+  local pbi_description="$3"
+  local acceptance_criteria="$4"
 
   cat <<'PROMPT'
-You are an autonomous software development agent implementing a Product Backlog Item (PBI).
+You are implementing exactly one Product Backlog Item (PBI). Stay tightly scoped to this PBI only.
 
 ## PBI Details
+
+**ID:**
+PROMPT
+  printf '%s\n\n' "$pbi_id"
+  cat <<'PROMPT'
 
 **Title:**
 PROMPT
@@ -957,22 +980,32 @@ PROMPT
 
 ## Feature Context
 
-Read the file \`.agent-context/feature.md\` in your working directory for additional context about the parent Feature this PBI belongs to.
+Read \`.agent-context/feature.md\` only for supporting context about the parent Feature.
+
+## Progress Memory
+
+Read \`progress.txt\` in the repo root before you start so you can reuse useful context and avoid repeating failed approaches from prior runs.
 
 ## Instructions
 
-1. Implement the PBI described above, satisfying all acceptance criteria.
-2. Write, edit, and test code as needed using the tools available to you.
-3. Commit your changes with a clear commit message referencing the work done.
-4. Push the commit to the remote origin. Do NOT create a pull request.
-5. When you have finished implementing and pushing all changes, output the exact string \`AGENT_COMPLETE\` on a line by itself to signal completion.
+1. Implement only this PBI and satisfy its acceptance criteria.
+2. Make the smallest change set that solves this PBI.
+3. Do not fix unrelated bugs, clean up unrelated code, or refactor outside the work required for this PBI.
+4. If you notice unrelated problems, leave them alone unless they block this PBI.
+5. Run only the checks needed to validate this PBI.
+6. Append a concise entry to \`progress.txt\` with today's date, the PBI ID, what you completed, and any important follow-up notes for the next run.
+7. If blocked, append a concise entry to \`progress.txt\` describing exactly what blocked you and what should be avoided or tried next.
+8. Commit only the code changes for this PBI and push to origin. Do NOT create a pull request. Do not include \`progress.txt\` in the commit.
+9. When complete, output the exact string \`AGENT_DONE\` on a line by itself.
+10. If you cannot complete this PBI cleanly, output the exact string \`AGENT_BLOCKED\` on a line by itself.
 PROMPT
 }
 
 # Dispatches the configured AI provider with the given prompt and captures output.
 # Globals set after return:
 #   AGENT_INVOKE_EXIT_CODE  — exit code from the agent process
-#   AGENT_INVOKE_COMPLETED  — "true" if AGENT_COMPLETE was detected in output, else "false"
+#   AGENT_INVOKE_COMPLETED  — "true" if AGENT_DONE/AGENT_COMPLETE was detected
+#   AGENT_INVOKE_BLOCKED    — "true" if AGENT_BLOCKED was detected
 # Usage: invoke_agent <prompt>
 # Prints the captured agent output (stdout + stderr combined).
 # Returns 1 if provider is invalid, otherwise returns 0 regardless of agent exit code
@@ -984,21 +1017,24 @@ invoke_agent() {
 
   AGENT_INVOKE_EXIT_CODE=0
   AGENT_INVOKE_COMPLETED="false"
+  AGENT_INVOKE_BLOCKED="false"
 
-  test_agent_completion_value() {
+  test_agent_signal_value() {
     local input="$1"
+    local raw_pattern="$2"
+    local json_pattern="$3"
 
     if [ -z "$input" ]; then
       return 1
     fi
 
-    if printf '%s\n' "$input" | grep -Eq '^[[:space:]]*AGENT_COMPLETE[[:space:]]*$'; then
+    if printf '%s\n' "$input" | grep -Eq "$raw_pattern"; then
       return 0
     fi
 
-    if printf '%s' "$input" | jq -e '
+    if printf '%s' "$input" | jq -e --arg pattern "$json_pattern" '
       def contains_completion:
-        if type == "string" then test("(?m)^\\s*AGENT_COMPLETE\\s*$")
+        if type == "string" then test($pattern)
         elif type == "array" then any(.[]; contains_completion)
         elif type == "object" then any(.[]; contains_completion)
         else false
@@ -1010,9 +1046,9 @@ invoke_agent() {
 
     while IFS= read -r line; do
       [ -z "$line" ] && continue
-      if printf '%s' "$line" | jq -e '
+      if printf '%s' "$line" | jq -e --arg pattern "$json_pattern" '
         def contains_completion:
-          if type == "string" then test("(?m)^\\s*AGENT_COMPLETE\\s*$")
+          if type == "string" then test($pattern)
           elif type == "array" then any(.[]; contains_completion)
           elif type == "object" then any(.[]; contains_completion)
           else false
@@ -1057,8 +1093,12 @@ invoke_agent() {
 
   AGENT_INVOKE_EXIT_CODE=$exit_code
 
-  if test_agent_completion_value "$output"; then
+  if test_agent_signal_value "$output" '^[[:space:]]*(AGENT_DONE|AGENT_COMPLETE)[[:space:]]*$' '(?m)^\s*(AGENT_DONE|AGENT_COMPLETE)\s*$'; then
     AGENT_INVOKE_COMPLETED="true"
+  fi
+
+  if test_agent_signal_value "$output" '^[[:space:]]*AGENT_BLOCKED[[:space:]]*$' '(?m)^\s*AGENT_BLOCKED\s*$'; then
+    AGENT_INVOKE_BLOCKED="true"
   fi
 
   if [ "$exit_code" -ne 0 ]; then
@@ -1068,16 +1108,10 @@ invoke_agent() {
   printf '%s' "$output"
 }
 
-# ── Inner Ralph loop ───────────────────────────────────────────────────
-
-# Inner loop that processes a single PBI through repeated agent invocations
-# until the work is verifiably complete or the max iteration limit is hit.
+# ── PBI processor ───────────────────────────────────────────────────────
 #
-# Sets PBI state to "In Progress" before the first invocation. Each iteration
-# invokes the agent with a fresh context (no session resumption). The stop
-# condition requires BOTH an AGENT_COMPLETE signal AND a clean, fully-pushed
-# working tree. On success the PBI is tagged "agent-done"; on exhaustion or
-# agent error it is tagged "agent-failed".
+# Processes a single PBI with one agent invocation. The agent must either
+# complete the work cleanly or explicitly report that it is blocked.
 #
 # Usage: process_pbi <pbi_id> <pbi_title> <pbi_description> <acceptance_criteria> <feature_branch> <feature_id>
 # Returns 0 on success, 1 on failure.
@@ -1089,7 +1123,7 @@ process_pbi() {
   local feature_branch="$5"
   local feature_id="$6"
 
-  log_info "Starting inner loop for PBI $pbi_id: $pbi_title"
+  log_info "Processing PBI $pbi_id: $pbi_title"
 
   # Set PBI state to the process-appropriate in-progress state before first agent invocation.
   local in_progress_state
@@ -1100,37 +1134,37 @@ process_pbi() {
   }
 
   local prompt
-  prompt=$(build_prompt "$pbi_title" "$pbi_description" "$acceptance_criteria")
+  prompt=$(build_prompt "$pbi_id" "$pbi_title" "$pbi_description" "$acceptance_criteria")
 
-  local iteration=1
-  local failure_reason="did not complete within $MAX_ITERATIONS iteration(s)"
-  while [ "$iteration" -le "$MAX_ITERATIONS" ]; do
-    log_info "Iteration ${iteration}/${MAX_ITERATIONS} for PBI ${pbi_id}"
+  local agent_output
+  agent_output=$(invoke_agent "$prompt")
 
-    local agent_output
-    agent_output=$(invoke_agent "$prompt")
+  capture_agent_log "$feature_id" "$agent_output"
 
-    # Capture agent output to the context log for this feature.
-    capture_agent_log "$feature_id" "$agent_output"
+  if [ "$AGENT_INVOKE_EXIT_CODE" -ne 0 ]; then
+    log_error "process_pbi: agent exited with code $AGENT_INVOKE_EXIT_CODE for PBI $pbi_id"
+    add_work_item_tag "$pbi_id" "agent-failed" || log_warn "process_pbi: failed to tag PBI $pbi_id as agent-failed"
+    return 1
+  fi
 
-    # Stop condition: AGENT_COMPLETE signal AND clean+pushed working tree.
-    if [ "$AGENT_INVOKE_COMPLETED" = "true" ] && check_clean_and_pushed "$feature_branch"; then
-      log_info "PBI $pbi_id completed successfully after $iteration iteration(s)"
-      add_work_item_tag "$pbi_id" "agent-done" || log_warn "process_pbi: failed to tag PBI $pbi_id as agent-done"
-      return 0
-    fi
+  if [ "$AGENT_INVOKE_BLOCKED" = "true" ]; then
+    log_error "process_pbi: agent reported PBI $pbi_id is blocked"
+    add_work_item_tag "$pbi_id" "agent-failed" || log_warn "process_pbi: failed to tag PBI $pbi_id as agent-failed"
+    return 1
+  fi
 
-    # If the agent process itself errored, stop retrying immediately.
-    if [ "$AGENT_INVOKE_EXIT_CODE" -ne 0 ]; then
-      log_error "process_pbi: agent exited with code $AGENT_INVOKE_EXIT_CODE on iteration $iteration — stopping"
-      failure_reason="stopped after agent exit code $AGENT_INVOKE_EXIT_CODE on iteration $iteration"
-      break
-    fi
+  if [ "$AGENT_INVOKE_COMPLETED" = "true" ] && check_clean_and_pushed "$feature_branch"; then
+    log_info "PBI $pbi_id completed successfully"
+    add_work_item_tag "$pbi_id" "agent-done" || log_warn "process_pbi: failed to tag PBI $pbi_id as agent-done"
+    return 0
+  fi
 
-    iteration=$((iteration + 1))
-  done
+  if [ "$AGENT_INVOKE_COMPLETED" = "true" ]; then
+    log_error "process_pbi: PBI $pbi_id reported completion but the branch is not clean and pushed"
+  else
+    log_error "process_pbi: PBI $pbi_id did not report AGENT_DONE"
+  fi
 
-  log_error "process_pbi: PBI $pbi_id $failure_reason"
   add_work_item_tag "$pbi_id" "agent-failed" || log_warn "process_pbi: failed to tag PBI $pbi_id as agent-failed"
   return 1
 }
@@ -1263,10 +1297,17 @@ write_feature_context "$FEATURE_ID" "# Feature: $FEATURE_TITLE
 ## Description
 $FEATURE_DESCRIPTION"
 
-# Step 9/10: Process each PBI serially; stop on first failure
+# Step 9/10: Process PBIs serially; stop on first failure
 FEATURE_SUCCESS=true
 if [ "$PBI_COUNT" -gt 0 ]; then
-  for i in $(seq 0 $((PBI_COUNT - 1))); do
+  PBI_LIMIT="$PBI_COUNT"
+  if [ "$MAX_ITERATIONS" -lt "$PBI_LIMIT" ]; then
+    PBI_LIMIT="$MAX_ITERATIONS"
+  fi
+
+  log_info "Processing up to $PBI_LIMIT PBI(s) for Feature $FEATURE_ID this run"
+
+  for i in $(seq 0 $((PBI_LIMIT - 1))); do
     PBI_JSON=$(printf '%s' "$SORTED_PBIS" | jq ".[$i]")
     PBI_ID=$(printf '%s' "$PBI_JSON" | jq -r '.id')
     PBI_TITLE=$(printf '%s' "$PBI_JSON" | jq -r '.fields["System.Title"] // ""')
@@ -1285,16 +1326,39 @@ if [ "$PBI_COUNT" -gt 0 ]; then
   done
 fi
 
-# Step 11: Create PR only when all PBIs are tagged agent-done
+# Step 11: Create PR only when all ready-for-agent PBIs are tagged agent-done
 if [ "$FEATURE_SUCCESS" = "true" ]; then
-  log_info "All PBIs completed — creating pull request for Feature $FEATURE_ID"
-  PR_URL=$(create_pull_request "$FEATURE_TITLE" "$FEATURE_BRANCH" "$PR_PBIS") || {
-    log_error "Failed to create pull request for Feature $FEATURE_ID"
-    append_feature_log_note "Failed to create pull request"
+  UPDATED_PBIS_JSON=$(get_child_pbis "$FEATURE_ID") || {
+    log_error "Failed to refresh child PBIs for Feature $FEATURE_ID"
     exit 1
   }
-  append_feature_log_note "Feature completed successfully. Pull request: $PR_URL"
-  log_info "Feature $FEATURE_ID complete — PR: $PR_URL"
+
+  REMAINING_READY_FOR_AGENT_PBIS=$(printf '%s' "$UPDATED_PBIS_JSON" | jq '[.[] | select(
+    ((.fields["System.Tags"] // "")
+      | split(";")
+      | map(gsub("^\\s+|\\s+$"; ""))
+      | any(. == "ready-for-agent"))
+    and (((.fields["System.Tags"] // "")
+      | split(";")
+      | map(gsub("^\\s+|\\s+$"; ""))
+      | any(. == "agent-done")) | not)
+  )]')
+  REMAINING_READY_COUNT=$(printf '%s' "$REMAINING_READY_FOR_AGENT_PBIS" | jq 'length')
+
+  if [ "$REMAINING_READY_COUNT" -eq 0 ]; then
+    log_info "All ready-for-agent PBIs completed — creating pull request for Feature $FEATURE_ID"
+    PR_URL=$(create_pull_request "$FEATURE_TITLE" "$FEATURE_BRANCH" "$PR_PBIS") || {
+      log_error "Failed to create pull request for Feature $FEATURE_ID"
+      append_feature_log_note "Failed to create pull request"
+      exit 1
+    }
+    append_feature_log_note "Feature completed successfully. Pull request: $PR_URL"
+    log_info "Feature $FEATURE_ID complete — PR: $PR_URL"
+    exit 0
+  fi
+
+  append_feature_log_note "Feature still has $REMAINING_READY_COUNT ready-for-agent PBI(s) remaining"
+  log_info "Feature $FEATURE_ID still has $REMAINING_READY_COUNT ready-for-agent PBI(s) remaining"
   exit 0
 else
   append_feature_log_note "Feature processing failed"

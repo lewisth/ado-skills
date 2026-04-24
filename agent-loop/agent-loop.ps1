@@ -28,7 +28,7 @@
   Base branch (auto-detected from git if omitted)
 
 .PARAMETER MaxIterations
-  Max agent invocations per PBI (default: 5)
+  Max PBIs to process this run (default: 1)
 
 .PARAMETER Provider
   AI provider: claude-code, cursor, or cursor-cli
@@ -253,7 +253,7 @@ $resolvedTeam           = Resolve-Value $Team          'Team'
 $resolvedProcess        = Resolve-Value $Process       'Process'
 $resolvedRepoUrl        = Resolve-Value $RepoUrl       'RepoUrl'
 $resolvedBaseBranch     = Resolve-Value $BaseBranch    'BaseBranch'    $null
-$resolvedMaxIterations  = Resolve-Value $MaxIterations 'MaxIterations' 5
+$resolvedMaxIterations  = Resolve-Value $MaxIterations 'MaxIterations' 1
 $resolvedProvider       = Resolve-ProviderName (Resolve-Value $Provider 'Provider')
 $resolvedModel          = Resolve-Value $Model         'Model'
 $resolvedFeatureId      = Resolve-Value $FeatureId     'FeatureId'
@@ -370,7 +370,7 @@ Write-Host "  Org:             $resolvedOrg"
 Write-Host "  Project:         $resolvedProject"
 Write-Host "  Provider:        ${resolvedProvider}${modelLabel}"
 Write-Host "  Base branch:     $baseBranchLabel"
-Write-Host "  Max iter/PBI:    $resolvedMaxIterations"
+Write-Host "  Max PBIs/run:    $resolvedMaxIterations"
 if ($resolvedFeatureId) { Write-Host "  Feature ID:      $resolvedFeatureId" }
 if ($resolvedAreaPath)  { Write-Host "  Area path:       $resolvedAreaPath" }
 if ($resolvedTeam)      { Write-Host "  Team:            $resolvedTeam" }
@@ -408,16 +408,29 @@ function Release-Lock {
 
 # ── Context manager ───────────────────────────────────────────────────
 $agentContextDir = Join-Path $resolvedWorkingDir '.agent-context'
+$progressFile = Join-Path $resolvedWorkingDir 'progress.txt'
 $script:currentFeatureLogFile = $null
 
 function Ensure-Gitignore {
     $gitignore = Join-Path $resolvedWorkingDir '.gitignore'
-    $entries = @('.agent-context/', '.agent-loop.lock')
+    $entries = @('.agent-context/', '.agent-loop.lock', 'progress.txt')
     foreach ($entry in $entries) {
         if (-not (Test-Path $gitignore) -or -not (Get-Content $gitignore -Raw).Contains($entry)) {
             Add-Content -Path $gitignore -Value $entry
             log_info "$entry added to .gitignore"
         }
+    }
+}
+
+function Ensure-ProgressFile {
+    if (-not (Test-Path $progressFile)) {
+        @(
+            '# Ralph Loop Progress Log'
+            "# Repo: $(Split-Path $resolvedWorkingDir -Leaf)"
+            "# Started: $((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
+            ''
+        ) | Set-Content -Path $progressFile
+        log_info "Progress file initialized: $progressFile"
     }
 }
 
@@ -535,15 +548,17 @@ function Get-WorkItemFieldValue {
 }
 
 # Queries ADO for Features that have at least one child PBI tagged
-# "ready-for-agent" in "New" state, scoped to the configured AreaPath.
+# "ready-for-agent", not tagged "agent-done", and still in a runnable state,
+# scoped to the configured AreaPath.
 # Returns an array of Feature IDs (integers).
 function Get-EligibleFeatures {
     $wiql = "SELECT [System.Id] FROM WorkItemLinks WHERE [Source].[System.WorkItemType] = 'Feature'"
+    $inProgressState = Get-InProgressState
     if ($resolvedAreaPath) {
         $escapedAreaPath = $resolvedAreaPath -replace "'", "''"
         $wiql += " AND [Source].[System.AreaPath] UNDER '$escapedAreaPath'"
     }
-    $wiql += " AND [Target].[System.Tags] CONTAINS 'ready-for-agent' AND [Target].[System.State] = 'New' AND [System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward' MODE (MustContain)"
+    $wiql += " AND [Target].[System.Tags] CONTAINS 'ready-for-agent' AND [Target].[System.Tags] NOT CONTAINS 'agent-done' AND ([Target].[System.State] = 'New' OR [Target].[System.State] = '$inProgressState') AND [System.Links.LinkType] = 'System.LinkTypes.Hierarchy-Forward' MODE (MustContain)"
 
     $url  = "$resolvedOrg/$resolvedProject/_apis/wit/wiql?api-version=7.1"
     $body = @{ query = $wiql } | ConvertTo-Json -Compress
@@ -981,15 +996,18 @@ function Test-CleanAndPushed {
 # Returns the assembled prompt string.
 function Build-Prompt {
     param(
+        [string] $PbiId,
         [string] $PbiTitle,
         [string] $PbiDescription,
         [string] $AcceptanceCriteria
     )
 
     return @"
-You are an autonomous software development agent implementing a Product Backlog Item (PBI).
+You are implementing exactly one Product Backlog Item (PBI). Stay tightly scoped to this PBI only.
 
 ## PBI Details
+
+**ID:** $PbiId
 
 **Title:** $PbiTitle
 
@@ -1001,34 +1019,46 @@ $AcceptanceCriteria
 
 ## Feature Context
 
-Read the file ```.agent-context/feature.md``` in your working directory for additional context about the parent Feature this PBI belongs to.
+Read the file ```.agent-context/feature.md``` only for supporting context about the parent Feature.
+
+## Progress Memory
+
+Read the file ```progress.txt``` in the repo root before you start so you can reuse useful context and avoid repeating failed approaches from prior runs.
 
 ## Instructions
 
-1. Implement the PBI described above, satisfying all acceptance criteria.
-2. Write, edit, and test code as needed using the tools available to you.
-3. Commit your changes with a clear commit message referencing the work done.
-4. Push the commit to the remote origin. Do NOT create a pull request.
-5. When you have finished implementing and pushing all changes, output the exact string ``AGENT_COMPLETE`` on a line by itself to signal completion.
+1. Implement only this PBI and satisfy its acceptance criteria.
+2. Make the smallest change set that solves this PBI.
+3. Do not fix unrelated bugs, clean up unrelated code, or refactor outside the work required for this PBI.
+4. If you notice unrelated problems, leave them alone unless they block this PBI.
+5. Run only the checks needed to validate this PBI.
+6. Append a concise entry to ```progress.txt``` with today's date, the PBI ID, what you completed, and any important follow-up notes for the next run.
+7. If blocked, append a concise entry to ```progress.txt``` describing exactly what blocked you and what should be avoided or tried next.
+8. Commit only the code changes for this PBI and push to origin. Do NOT create a pull request. Do not include ```progress.txt``` in the commit.
+9. When complete, output the exact string ``AGENT_DONE`` on a line by itself.
+10. If you cannot complete this PBI cleanly, output the exact string ``AGENT_BLOCKED`` on a line by itself.
 "@
 }
 
-# Recursively checks raw or JSON-parsed agent output for the exact
-# AGENT_COMPLETE token on its own line.
+# Recursively checks raw or JSON-parsed agent output for an exact
+# agent status token on its own line.
 function Test-AgentCompletionValue {
-    param($Value)
+    param(
+        $Value,
+        [string] $Pattern
+    )
 
     if ($null -eq $Value) {
         return $false
     }
 
     if ($Value -is [string]) {
-        return [regex]::IsMatch($Value, '(?m)^\s*AGENT_COMPLETE\s*$')
+        return [regex]::IsMatch($Value, $Pattern)
     }
 
     if ($Value -is [System.Collections.IDictionary]) {
         foreach ($entry in $Value.GetEnumerator()) {
-            if (Test-AgentCompletionValue -Value $entry.Value) {
+            if (Test-AgentCompletionValue -Value $entry.Value -Pattern $Pattern) {
                 return $true
             }
         }
@@ -1038,7 +1068,7 @@ function Test-AgentCompletionValue {
 
     if (($Value -is [System.Collections.IEnumerable]) -and -not ($Value -is [string])) {
         foreach ($item in $Value) {
-            if (Test-AgentCompletionValue -Value $item) {
+            if (Test-AgentCompletionValue -Value $item -Pattern $Pattern) {
                 return $true
             }
         }
@@ -1047,7 +1077,7 @@ function Test-AgentCompletionValue {
     }
 
     foreach ($property in $Value.PSObject.Properties) {
-        if (Test-AgentCompletionValue -Value $property.Value) {
+        if (Test-AgentCompletionValue -Value $property.Value -Pattern $Pattern) {
             return $true
         }
     }
@@ -1055,16 +1085,19 @@ function Test-AgentCompletionValue {
     return $false
 }
 
-# Detects AGENT_COMPLETE in either raw text output or JSON output emitted by
+# Detects a status token in either raw text output or JSON output emitted by
 # Cursor/Claude CLIs when --output-format json is enabled.
-function Test-AgentCompleted {
-    param([string] $Output)
+function Test-AgentSignal {
+    param(
+        [string] $Output,
+        [string] $Pattern
+    )
 
     if (-not $Output) {
         return $false
     }
 
-    if (Test-AgentCompletionValue -Value $Output) {
+    if (Test-AgentCompletionValue -Value $Output -Pattern $Pattern) {
         return $true
     }
 
@@ -1082,7 +1115,7 @@ function Test-AgentCompleted {
             continue
         }
 
-        if (Test-AgentCompletionValue -Value $parsed) {
+        if (Test-AgentCompletionValue -Value $parsed -Pattern $Pattern) {
             return $true
         }
     }
@@ -1093,7 +1126,8 @@ function Test-AgentCompleted {
 # Dispatches the configured AI provider with the given prompt and captures output.
 # Returns a hashtable with:
 #   ExitCode   — exit code from the agent process
-#   Completed  — $true if AGENT_COMPLETE was detected in output, else $false
+#   Completed  — $true if AGENT_DONE/AGENT_COMPLETE was detected in output
+#   Blocked    — $true if AGENT_BLOCKED was detected in output
 #   Output     — the captured agent output string
 # Throws if the provider value is not recognised.
 # Usage: Invoke-Agent -Prompt <string>
@@ -1139,7 +1173,8 @@ function Invoke-Agent {
         }
     }
 
-    $completed = Test-AgentCompleted -Output $output
+    $completed = Test-AgentSignal -Output $output -Pattern '(?m)^\s*(AGENT_DONE|AGENT_COMPLETE)\s*$'
+    $blocked   = Test-AgentSignal -Output $output -Pattern '(?m)^\s*AGENT_BLOCKED\s*$'
 
     if ($exitCode -ne 0) {
         log_error "Invoke-Agent: agent exited with non-zero exit code $exitCode"
@@ -1148,20 +1183,15 @@ function Invoke-Agent {
     return @{
         ExitCode  = $exitCode
         Completed = $completed
+        Blocked   = $blocked
         Output    = $output
     }
 }
 
-# ── Inner Ralph loop ───────────────────────────────────────────────────
-
-# Inner loop that processes a single PBI through repeated agent invocations
-# until the work is verifiably complete or the max iteration limit is hit.
+# ── PBI processor ───────────────────────────────────────────────────────
 #
-# Sets PBI state to "In Progress" before the first invocation. Each iteration
-# invokes the agent with a fresh context (no session resumption). The stop
-# condition requires BOTH an AGENT_COMPLETE signal AND a clean, fully-pushed
-# working tree. On success the PBI is tagged "agent-done"; on exhaustion or
-# agent error it is tagged "agent-failed".
+# Processes a single PBI with one agent invocation. The agent must either
+# complete the work cleanly or explicitly report that it is blocked.
 #
 # Usage: Invoke-ProcessPbi -PbiId <id> -PbiTitle <title> -PbiDescription <desc> -AcceptanceCriteria <ac> -FeatureBranch <branch> -FeatureId <id>
 # Returns $true on success, $false on failure.
@@ -1175,7 +1205,7 @@ function Invoke-ProcessPbi {
         [string] $FeatureId
     )
 
-    log_info "Starting inner loop for PBI ${PbiId}: $PbiTitle"
+    log_info "Processing PBI ${PbiId}: $PbiTitle"
 
     # Set PBI state to the process-appropriate in-progress state before first agent invocation.
     $inProgressState = Get-InProgressState
@@ -1186,31 +1216,36 @@ function Invoke-ProcessPbi {
         return $false
     }
 
-    $prompt = Build-Prompt -PbiTitle $PbiTitle -PbiDescription $PbiDescription -AcceptanceCriteria $AcceptanceCriteria
+    $prompt = Build-Prompt -PbiId $PbiId -PbiTitle $PbiTitle -PbiDescription $PbiDescription -AcceptanceCriteria $AcceptanceCriteria
 
-    for ($iteration = 1; $iteration -le $resolvedMaxIterations; $iteration++) {
-        log_info "Iteration ${iteration}/$resolvedMaxIterations for PBI $PbiId"
+    $result = Invoke-Agent -Prompt $prompt
 
-        $result = Invoke-Agent -Prompt $prompt
+    Capture-AgentLog -FeatureId $FeatureId -Output $result.Output
 
-        # Capture agent output to the context log for this feature.
-        Capture-AgentLog -FeatureId $FeatureId -Output $result.Output
-
-        # Stop condition: AGENT_COMPLETE signal AND clean+pushed working tree.
-        if ($result.Completed -and (Test-CleanAndPushed -FeatureBranch $FeatureBranch)) {
-            log_info "PBI $PbiId completed successfully after $iteration iteration(s)"
-            try { Add-WorkItemTag -WorkItemId $PbiId -Tag 'agent-done' } catch { log_warn "Invoke-ProcessPbi: failed to tag PBI $PbiId as agent-done" }
-            return $true
-        }
-
-        # If the agent process itself errored, stop retrying immediately.
-        if ($result.ExitCode -ne 0) {
-            log_error "Invoke-ProcessPbi: agent exited with code $($result.ExitCode) on iteration $iteration — stopping"
-            break
-        }
+    if ($result.ExitCode -ne 0) {
+        log_error "Invoke-ProcessPbi: agent exited with code $($result.ExitCode) for PBI $PbiId"
+        try { Add-WorkItemTag -WorkItemId $PbiId -Tag 'agent-failed' } catch { log_warn "Invoke-ProcessPbi: failed to tag PBI $PbiId as agent-failed" }
+        return $false
     }
 
-    log_error "Invoke-ProcessPbi: PBI $PbiId did not complete within $resolvedMaxIterations iteration(s)"
+    if ($result.Blocked) {
+        log_error "Invoke-ProcessPbi: agent reported PBI $PbiId is blocked"
+        try { Add-WorkItemTag -WorkItemId $PbiId -Tag 'agent-failed' } catch { log_warn "Invoke-ProcessPbi: failed to tag PBI $PbiId as agent-failed" }
+        return $false
+    }
+
+    if ($result.Completed -and (Test-CleanAndPushed -FeatureBranch $FeatureBranch)) {
+        log_info "PBI $PbiId completed successfully"
+        try { Add-WorkItemTag -WorkItemId $PbiId -Tag 'agent-done' } catch { log_warn "Invoke-ProcessPbi: failed to tag PBI $PbiId as agent-done" }
+        return $true
+    }
+
+    if ($result.Completed) {
+        log_error "Invoke-ProcessPbi: PBI $PbiId reported completion but the branch is not clean and pushed"
+    } else {
+        log_error "Invoke-ProcessPbi: PBI $PbiId did not report AGENT_DONE"
+    }
+
     try { Add-WorkItemTag -WorkItemId $PbiId -Tag 'agent-failed' } catch { log_warn "Invoke-ProcessPbi: failed to tag PBI $PbiId as agent-failed" }
     return $false
 }
@@ -1222,6 +1257,7 @@ try {
         exit 0
     }
     Ensure-Gitignore
+    Ensure-ProgressFile
 
     # Resolve base branch early (auto-detect if not configured) so it is
     # available to both New-FeatureBranch and New-PullRequest.
@@ -1335,9 +1371,12 @@ try {
     $featureContext = "# Feature: $featureTitle`n`n## Description`n$featureDescription"
     Write-FeatureContext -FeatureId $featureId -Content $featureContext
 
-    # Step 9/10: Process each PBI serially; stop on first failure
+    # Step 9/10: Process PBIs serially; stop on first failure
     $featureSuccess = $true
-    foreach ($pbi in $sortedPbis) {
+    $pbiLimit = [Math]::Min($sortedPbis.Count, $resolvedMaxIterations)
+    log_info "Processing up to $pbiLimit PBI(s) for Feature $featureId this run"
+
+    foreach ($pbi in @($sortedPbis | Select-Object -First $pbiLimit)) {
         $pbiId          = [string]$pbi.id
         $pbiTitle       = $pbi.fields.'System.Title'
         $pbiDescription = Get-WorkItemFieldValue -Fields $pbi.fields -FieldName 'System.Description' -DefaultValue ''
@@ -1362,17 +1401,34 @@ try {
         log_info "PBI $pbiId completed"
     }
 
-    # Step 11: Create PR only when all PBIs are tagged agent-done
+    # Step 11: Create PR only when all ready-for-agent PBIs are tagged agent-done
     if ($featureSuccess) {
-        log_info "All PBIs completed — creating pull request for Feature $featureId"
-        try {
-            $prUrl = New-PullRequest -FeatureTitle $featureTitle -FeatureBranch $featureBranch -Pbis $prPbis
-        } catch {
-            Add-FeatureLogNote -Message 'Failed to create pull request'
-            throw
+        $updatedChildPbis = @(Get-ChildPbis -FeatureId $featureId)
+        $remainingReadyForAgentPbis = @($updatedChildPbis | Where-Object {
+            $tags = Get-WorkItemFieldValue -Fields $_.fields -FieldName 'System.Tags' -DefaultValue ''
+            $tagList = if ($tags) {
+                @($tags -split ';' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            } else {
+                @()
+            }
+            ($tagList -contains 'ready-for-agent') -and (-not ($tagList -contains 'agent-done'))
+        })
+
+        if ($remainingReadyForAgentPbis.Count -eq 0) {
+            log_info "All ready-for-agent PBIs completed — creating pull request for Feature $featureId"
+            try {
+                $prUrl = New-PullRequest -FeatureTitle $featureTitle -FeatureBranch $featureBranch -Pbis $prPbis
+            } catch {
+                Add-FeatureLogNote -Message 'Failed to create pull request'
+                throw
+            }
+            Add-FeatureLogNote -Message "Feature completed successfully. Pull request: $prUrl"
+            log_info "Feature $featureId complete — PR: $prUrl"
+            exit 0
         }
-        Add-FeatureLogNote -Message "Feature completed successfully. Pull request: $prUrl"
-        log_info "Feature $featureId complete — PR: $prUrl"
+
+        Add-FeatureLogNote -Message "Feature still has $($remainingReadyForAgentPbis.Count) ready-for-agent PBI(s) remaining"
+        log_info "Feature $featureId still has $($remainingReadyForAgentPbis.Count) ready-for-agent PBI(s) remaining"
         exit 0
     } else {
         Add-FeatureLogNote -Message 'Feature processing failed'
