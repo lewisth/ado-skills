@@ -49,6 +49,37 @@ log_error() {
   echo "[$(date -u '+%Y-%m-%d %H:%M:%S')] [ERROR] $*" >&2
 }
 
+format_command_argument() {
+  local value="${1-}"
+
+  if [ -z "${value+x}" ]; then
+    printf "''"
+    return 0
+  fi
+
+  if [[ "$value" =~ [[:space:]\`\"\$] ]]; then
+    value=${value//\\/\\\\}
+    value=${value//\"/\\\"}
+    printf '"%s"' "$value"
+    return 0
+  fi
+
+  printf '%s' "$value"
+}
+
+write_command_log() {
+  local prefix="$1"
+  shift || true
+
+  local formatted=()
+  local arg
+  for arg in "$@"; do
+    formatted+=("$(format_command_argument "$arg")")
+  done
+
+  log_info "$prefix ${formatted[*]}"
+}
+
 print_usage() {
   cat <<EOF
 Usage: agent-loop.sh [OPTIONS]
@@ -158,6 +189,8 @@ done
 # ── Load config file ──────────────────────────────────────────────────
 import_config_file() {
   local config_file="$1"
+  local json
+  local value
 
   if [ ! -f "$config_file" ]; then
     return 0
@@ -168,19 +201,37 @@ import_config_file() {
     exit 1
   fi
 
-  CONFIG_ORG=$(jq -r '.organizationUrl // empty' "$config_file" 2>/dev/null || true)
-  CONFIG_PROJECT=$(jq -r '.project // empty' "$config_file" 2>/dev/null || true)
-  CONFIG_AREA_PATH=$(jq -r '.areaPath // empty' "$config_file" 2>/dev/null || true)
-  CONFIG_TEAM=$(jq -r '.team // empty' "$config_file" 2>/dev/null || true)
-  CONFIG_PROCESS=$(jq -r '.process // empty' "$config_file" 2>/dev/null || true)
-  CONFIG_REPO_URL=$(jq -r '.repositoryUrl // empty' "$config_file" 2>/dev/null || true)
-  CONFIG_BASE_BRANCH=$(jq -r '.baseBranch // empty' "$config_file" 2>/dev/null || true)
-  CONFIG_MAX_ITERATIONS=$(jq -r '.maxIterationsPerPbi // empty' "$config_file" 2>/dev/null || true)
-  CONFIG_PROVIDER=$(jq -r '.provider // empty' "$config_file" 2>/dev/null || true)
-  CONFIG_MODEL=$(jq -r '.model // empty' "$config_file" 2>/dev/null || true)
-  CONFIG_WORKING_DIRECTORY=$(jq -r '.workingDirectory // empty' "$config_file" 2>/dev/null || true)
-  CONFIG_SYSTEM_LOG_DIRECTORY=$(jq -r '.systemLogDirectory // empty' "$config_file" 2>/dev/null || true)
-  CONFIG_FEATURE_ID=$(jq -r '.featureId // empty' "$config_file" 2>/dev/null || true)
+  if ! json=$(jq -c '.' "$config_file" 2>/dev/null); then
+    echo "Error: Failed to parse ${config_file}" >&2
+    exit 1
+  fi
+
+  value=$(printf '%s' "$json" | jq -r 'if .organizationUrl == null then empty else .organizationUrl end')
+  [ -n "$value" ] && CONFIG_ORG="$value"
+  value=$(printf '%s' "$json" | jq -r 'if .project == null then empty else .project end')
+  [ -n "$value" ] && CONFIG_PROJECT="$value"
+  value=$(printf '%s' "$json" | jq -r 'if .areaPath == null then empty else .areaPath end')
+  [ -n "$value" ] && CONFIG_AREA_PATH="$value"
+  value=$(printf '%s' "$json" | jq -r 'if .team == null then empty else .team end')
+  [ -n "$value" ] && CONFIG_TEAM="$value"
+  value=$(printf '%s' "$json" | jq -r 'if .process == null then empty else .process end')
+  [ -n "$value" ] && CONFIG_PROCESS="$value"
+  value=$(printf '%s' "$json" | jq -r 'if .repositoryUrl == null then empty else .repositoryUrl end')
+  [ -n "$value" ] && CONFIG_REPO_URL="$value"
+  value=$(printf '%s' "$json" | jq -r 'if .baseBranch == null then empty else .baseBranch end')
+  [ -n "$value" ] && CONFIG_BASE_BRANCH="$value"
+  value=$(printf '%s' "$json" | jq -r 'if .maxIterationsPerPbi == null then empty else (.maxIterationsPerPbi | tostring) end')
+  [ -n "$value" ] && CONFIG_MAX_ITERATIONS="$value"
+  value=$(printf '%s' "$json" | jq -r 'if .provider == null then empty else .provider end')
+  [ -n "$value" ] && CONFIG_PROVIDER="$value"
+  value=$(printf '%s' "$json" | jq -r 'if .model == null then empty else .model end')
+  [ -n "$value" ] && CONFIG_MODEL="$value"
+  value=$(printf '%s' "$json" | jq -r 'if .workingDirectory == null then empty else .workingDirectory end')
+  [ -n "$value" ] && CONFIG_WORKING_DIRECTORY="$value"
+  value=$(printf '%s' "$json" | jq -r 'if .systemLogDirectory == null then empty else .systemLogDirectory end')
+  [ -n "$value" ] && CONFIG_SYSTEM_LOG_DIRECTORY="$value"
+  value=$(printf '%s' "$json" | jq -r 'if .featureId == null then empty else (.featureId | tostring) end')
+  [ -n "$value" ] && CONFIG_FEATURE_ID="$value"
 }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -225,7 +276,7 @@ if [ ${#ERRORS[@]} -gt 0 ]; then
     echo "  - $err" >&2
   done
   echo "" >&2
-  echo "Provide values via CLI parameters or .agent-loop.json in the working directory." >&2
+  echo "Provide values via CLI parameters or .agent-loop.json next to the script and/or in the working directory." >&2
   echo "See .agent-loop.example.json for the full schema." >&2
   exit 1
 fi
@@ -430,6 +481,7 @@ _ado_call() {
 
   local http_code
   if [ -n "$body" ]; then
+    log_info "ADO request: curl -X $method -H Authorization:*** -H Content-Type:$content_type -d $body '$url'"
     http_code=$(curl -s -o "$tmp_body" -w '%{http_code}' \
       -X "$method" \
       -H "Authorization: $auth" \
@@ -437,6 +489,7 @@ _ado_call() {
       -d "$body" \
       "$url")
   else
+    log_info "ADO request: curl -X $method -H Authorization:*** '$url'"
     http_code=$(curl -s -o "$tmp_body" -w '%{http_code}' \
       -X "$method" \
       -H "Authorization: $auth" \
@@ -751,8 +804,8 @@ sort_pbis_by_dependency() {
   local pbis_json="$1"
 
   # The entire algorithm runs inside jq (already required by the script).
-  # Dependency-Forward on a PBI means "this PBI is a predecessor of the
-  # linked item" → edge: src → tgt (src must execute before tgt).
+  # Dependency-Forward on PBI A → B means "A is a predecessor of B".
+  # Dependency-Reverse on PBI B → A means the same edge A → B.
   local jq_prog='
 . as $pbis |
 (map(.id | tostring) | unique) as $allIds |
@@ -764,12 +817,22 @@ else
     {adj: {}, indeg: $initIndeg};
     ($pbi.id | tostring) as $src |
     .adj[$src] //= [] |
-    reduce (($pbi.relations // [])[] | select(.rel == "System.LinkTypes.Dependency-Forward")) as $rel (
+    reduce (($pbi.relations // [])[]) as $rel (
       .;
-      ($rel.url | split("/") | last) as $tgt |
-      if ($initIndeg | has($tgt)) and ((.adj[$src] | index($tgt)) == null) then
-        .adj[$src] += [$tgt] |
-        .indeg[$tgt] += 1
+      if $rel.rel == "System.LinkTypes.Dependency-Forward" then
+        ($src) as $edgeSrc |
+        ($rel.url | split("/") | last) as $edgeTgt |
+        if ($initIndeg | has($edgeSrc)) and ($initIndeg | has($edgeTgt)) and ((.adj[$edgeSrc] | index($edgeTgt)) == null) then
+          .adj[$edgeSrc] += [$edgeTgt] |
+          .indeg[$edgeTgt] += 1
+        else . end
+      elif $rel.rel == "System.LinkTypes.Dependency-Reverse" then
+        ($rel.url | split("/") | last) as $edgeSrc |
+        ($src) as $edgeTgt |
+        if ($initIndeg | has($edgeSrc)) and ($initIndeg | has($edgeTgt)) and ((.adj[$edgeSrc] | index($edgeTgt)) == null) then
+          .adj[$edgeSrc] += [$edgeTgt] |
+          .indeg[$edgeTgt] += 1
+        else . end
       else . end
     )
   )) as $g |
@@ -824,6 +887,7 @@ detect_default_branch() {
   fi
 
   local symbolic_ref
+  write_command_log "Running:" git symbolic-ref refs/remotes/origin/HEAD
   symbolic_ref=$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null) || {
     log_error "detect_default_branch: cannot determine default branch — set baseBranch in config or --base-branch"
     return 1
@@ -863,20 +927,24 @@ create_feature_branch() {
 
   log_info "Creating branch '$branch_name' from '$base_branch'"
 
+  write_command_log "Running:" git fetch origin "$base_branch"
   git fetch origin "$base_branch" 2>&1 | while IFS= read -r line; do log_info "git: $line"; done
   if [ "${PIPESTATUS[0]}" -ne 0 ]; then
     log_error "create_feature_branch: failed to fetch '$base_branch' from origin"
     return 1
   fi
 
+  write_command_log "Running:" git show-ref --verify --quiet "refs/heads/$branch_name"
   if git show-ref --verify --quiet "refs/heads/$branch_name"; then
     log_info "Branch '$branch_name' already exists locally — checking out"
+    write_command_log "Running:" git checkout "$branch_name"
     git checkout "$branch_name" 2>&1 | while IFS= read -r line; do log_info "git: $line"; done
     if [ "${PIPESTATUS[0]}" -ne 0 ]; then
       log_error "create_feature_branch: failed to checkout existing branch '$branch_name'"
       return 1
     fi
   else
+    write_command_log "Running:" git checkout -b "$branch_name" "origin/$base_branch"
     git checkout -b "$branch_name" "origin/$base_branch" 2>&1 | while IFS= read -r line; do log_info "git: $line"; done
     if [ "${PIPESTATUS[0]}" -ne 0 ]; then
       log_error "create_feature_branch: failed to create branch '$branch_name'"
@@ -884,6 +952,7 @@ create_feature_branch() {
     fi
   fi
 
+  write_command_log "Running:" git push -u origin "$branch_name"
   git push -u origin "$branch_name" 2>&1 | while IFS= read -r line; do log_info "git: $line"; done
   if [ "${PIPESTATUS[0]}" -ne 0 ]; then
     log_error "create_feature_branch: failed to push '$branch_name' to origin"
@@ -902,6 +971,7 @@ check_clean_and_pushed() {
   local feature_branch="$1"
 
   local status_output
+  write_command_log "Running:" git status --porcelain
   status_output=$(git status --porcelain 2>&1)
   if [ -n "$status_output" ]; then
     log_error "check_clean_and_pushed: working tree is not clean — uncommitted changes detected"
@@ -910,9 +980,11 @@ check_clean_and_pushed() {
   fi
 
   # Fetch to make sure remote tracking ref is current.
+  write_command_log "Running:" git fetch origin "$feature_branch"
   git fetch origin "$feature_branch" 2>/dev/null || true
 
   local unpushed
+  write_command_log "Running:" git log "origin/${feature_branch}..HEAD" --oneline
   unpushed=$(git log "origin/${feature_branch}..HEAD" --oneline 2>/dev/null)
   if [ -n "$unpushed" ]; then
     log_error "check_clean_and_pushed: there are unpushed commits on '$feature_branch':"
@@ -1114,7 +1186,7 @@ invoke_agent() {
 # complete the work cleanly or explicitly report that it is blocked.
 #
 # Usage: process_pbi <pbi_id> <pbi_title> <pbi_description> <acceptance_criteria> <feature_branch> <feature_id>
-# Returns 0 on success, 1 on failure.
+# Returns 0 on success, 2 when blocked, 1 on failure.
 process_pbi() {
   local pbi_id="$1"
   local pbi_title="$2"
@@ -1148,9 +1220,9 @@ process_pbi() {
   fi
 
   if [ "$AGENT_INVOKE_BLOCKED" = "true" ]; then
-    log_error "process_pbi: agent reported PBI $pbi_id is blocked"
-    add_work_item_tag "$pbi_id" "agent-failed" || log_warn "process_pbi: failed to tag PBI $pbi_id as agent-failed"
-    return 1
+    log_warn "process_pbi: agent reported PBI $pbi_id is blocked"
+    add_work_item_tag "$pbi_id" "agent-blocked" || log_warn "process_pbi: failed to tag PBI $pbi_id as agent-blocked"
+    return 2
   fi
 
   if [ "$AGENT_INVOKE_COMPLETED" = "true" ] && check_clean_and_pushed "$feature_branch"; then
@@ -1242,6 +1314,10 @@ REMAINING_READY_FOR_AGENT_PBIS=$(printf '%s' "$READY_FOR_AGENT_PBIS" | jq '[.[] 
     | split(";")
     | map(gsub("^\\s+|\\s+$"; ""))
     | any(. == "agent-done")) | not
+  and (((.fields["System.Tags"] // "")
+    | split(";")
+    | map(gsub("^\\s+|\\s+$"; ""))
+    | any(. == "agent-blocked")) | not)
 )]')
 
 PBIS_JSON=$(printf '%s' "$REMAINING_READY_FOR_AGENT_PBIS" | jq \
@@ -1254,6 +1330,10 @@ PBIS_JSON=$(printf '%s' "$REMAINING_READY_FOR_AGENT_PBIS" | jq \
       | split(";")
       | map(gsub("^\\s+|\\s+$"; ""))
       | any(. == "agent-done")) | not)
+    and (((.fields["System.Tags"] // "")
+      | split(";")
+      | map(gsub("^\\s+|\\s+$"; ""))
+      | any(. == "agent-blocked")) | not)
     and ((.fields["System.State"] // "") == "New" or (.fields["System.State"] // "") == $runnable_state)
   )]')
 
@@ -1316,7 +1396,18 @@ if [ "$PBI_COUNT" -gt 0 ]; then
 
     log_info "Starting PBI $PBI_ID: $PBI_TITLE"
 
-    if ! process_pbi "$PBI_ID" "$PBI_TITLE" "$PBI_DESCRIPTION" "$PBI_AC" "$FEATURE_BRANCH" "$FEATURE_ID"; then
+    if process_pbi "$PBI_ID" "$PBI_TITLE" "$PBI_DESCRIPTION" "$PBI_AC" "$FEATURE_BRANCH" "$FEATURE_ID"; then
+      process_result=0
+    else
+      process_result=$?
+    fi
+
+    if [ "$process_result" -eq 2 ]; then
+      log_warn "PBI $PBI_ID blocked — skipping and continuing with remaining PBIs"
+      continue
+    fi
+
+    if [ "$process_result" -ne 0 ]; then
       log_error "PBI $PBI_ID failed — skipping remaining PBIs for Feature $FEATURE_ID"
       FEATURE_SUCCESS=false
       break
@@ -1342,6 +1433,10 @@ if [ "$FEATURE_SUCCESS" = "true" ]; then
       | split(";")
       | map(gsub("^\\s+|\\s+$"; ""))
       | any(. == "agent-done")) | not)
+    and (((.fields["System.Tags"] // "")
+      | split(";")
+      | map(gsub("^\\s+|\\s+$"; ""))
+      | any(. == "agent-blocked")) | not)
   )]')
   REMAINING_READY_COUNT=$(printf '%s' "$REMAINING_READY_FOR_AGENT_PBIS" | jq 'length')
 
