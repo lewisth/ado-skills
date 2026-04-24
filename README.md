@@ -83,6 +83,14 @@ Break a Feature into independently-grabbable PBIs using tracer-bullet vertical s
 npx skills@latest add lewisth/ado-skills --skill to-pbis
 ```
 
+### implement-pbi
+
+Fetch one specific ADO PBI-like work item by ID, load its parent Feature context, implement only that scope on the current checked-out branch, create a local commit, and stop without pushing or opening a PR.
+
+```bash
+npx skills@latest add lewisth/ado-skills --skill implement-pbi
+```
+
 ## ADO Concepts Reference
 
 | GitHub | Azure DevOps |
