@@ -83,6 +83,14 @@ Break a Feature into independently-grabbable PBIs using tracer-bullet vertical s
 npx skills@latest add lewisth/ado-skills --skill to-pbis
 ```
 
+### report-bug
+
+Interview a QA engineer step-by-step to gather bug details (repro steps, expected/actual behaviour, severity), then create an Azure DevOps **Bug** work item with structured reproduction steps.
+
+```bash
+npx skills@latest add lewisth/ado-skills --skill report-bug
+```
+
 ### implement-pbi
 
 Fetch one specific ADO PBI-like work item by ID, load its parent Feature context, implement only that scope on the current checked-out branch, create a local commit, and stop without pushing or opening a PR.
