@@ -1,6 +1,6 @@
 ---
 name: exploratory-testing-charter
-description: Create session-based exploratory testing charters with clear mission, time box, note-taking structure, and follow-up actions. Use when the user asks for an exploratory test charter, session-based testing plan, manual discovery workflow, or help turning findings into bugs or automated tests.
+description: Create session-based exploratory testing charters with a clear mission, time box, note-taking structure, and follow-up actions. Use when the user asks for an exploratory test charter, session-based testing plan, manual discovery workflow, or help turning findings into bugs or automated tests.
 ---
 
 # Exploratory Testing Charter
@@ -9,9 +9,7 @@ Structure exploratory testing so the session stays focused, evidence-rich, and e
 
 ## Inputs
 
-You need the feature, workflow, risk area, or release scope to explore. If the session goal, audience, or time budget is unclear, ask first.
-
-Ask a small number of focused questions if the mission, time box, or target risk area is unclear. Do not let clarification overwhelm the speed and focus of the charter.
+You need the feature, workflow, risk area, or release scope to explore. If the session goal, audience, or time budget is unclear, ask a small number of focused questions without slowing the charter down.
 
 ## Workflow
 
@@ -62,7 +60,7 @@ Suggest focus areas such as:
 - state transitions and repeated actions
 - browser, device, locale, or accessibility differences when relevant
 
-Encourage learning-driven exploration, but keep it aligned to the session mission.
+Encourage learning-driven exploration, but keep it aligned to the mission.
 
 ### 5. Convert findings into follow-up work
 
@@ -75,7 +73,7 @@ For each meaningful finding, decide whether it should become:
 
 Do not leave important findings trapped in session notes.
 
-## Output
+## Report Back
 
 Unless the user asks for another format, provide:
 
@@ -84,12 +82,3 @@ Unless the user asks for another format, provide:
 3. the suggested exploration areas
 4. the note-taking template
 5. how to convert findings into follow-up work
-
-## Report Back
-
-Briefly tell the user:
-
-- what the session is intended to uncover
-- how long and how focused it should be
-- how findings should be captured
-- how bugs or automation follow-ups should be created

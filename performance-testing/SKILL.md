@@ -1,6 +1,6 @@
 ---
 name: performance-testing
-description: Write performance test plans and scripts that match the repository's tooling, workload models, SLOs, and threshold assertions. Use when the user asks for k6, Locust, JMeter, load testing, stress testing, baseline thresholds, ramp profiles, or performance regression coverage.
+description: Write performance test plans and scripts that match the repo's tooling, workload models, SLOs, and thresholds. Use when the user asks for k6, Locust, JMeter, load testing, stress testing, baseline thresholds, ramp profiles, or performance regression coverage.
 ---
 
 # Performance Testing
@@ -9,9 +9,7 @@ Write performance tests that reflect realistic load and assert against meaningfu
 
 ## Inputs
 
-You need the target system, critical user journey or API, environment, and performance question to answer. If the SLOs, traffic shape, or baseline expectations are unclear, ask first.
-
-First inspect the repository for existing performance scripts, thresholds, SLO references, dashboards, and environment guidance. Ask the user only for the performance question to answer, safe execution constraints, or targets that are not documented locally.
+You need the target system, critical user journey or API, environment, and performance question to answer. Inspect the repo first for existing scripts, thresholds, SLO references, dashboards, and environment guidance. Ask the user only for the performance question, safe execution constraints, or targets not documented locally.
 
 ## Workflow
 
@@ -28,7 +26,7 @@ Capture:
 - data seeding and auth setup
 - workload patterns already used by the team
 
-If the repo has no usable prior art, ask rather than inventing arbitrary thresholds.
+If the repo has no usable prior art, ask rather than invent thresholds.
 
 ### 2. Model realistic traffic
 
@@ -70,7 +68,7 @@ Choose the lightest script that answers the question:
 - targeted load profile for a risky endpoint or workflow
 - broader scenario mix for release or capacity validation
 
-Do not build a huge suite when one focused scenario would answer the question.
+Do not build a large suite when one focused scenario will answer the question.
 
 ### 6. Validate carefully
 

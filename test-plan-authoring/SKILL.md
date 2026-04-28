@@ -1,6 +1,6 @@
 ---
 name: test-plan-authoring
-description: Generate structured test plans from requirements, user stories, bug reports, or pull requests with clear traceability and risk-based prioritization. Use when the user asks for a test plan, QA plan, UAT checklist, regression scope, release validation, or wants requirements mapped to test coverage.
+description: Generate structured test plans from requirements, user stories, bug reports, or pull requests with clear traceability and risk-based prioritization. Use when the user asks for a test plan, QA plan, UAT checklist, regression scope, release validation, or requirements mapped to test coverage.
 ---
 
 # Test Plan Authoring
@@ -16,17 +16,13 @@ You need at least one source of truth:
 - a pull request or diff
 - a bug report or incident description
 
-If the intended audience is unclear, ask whether the plan is for QA, UAT, release validation, regression, or developer self-test.
-
-If important context is missing, first check whether the answer can be recovered from the codebase, existing tests, CI, linked work items, or repository docs. Ask the user only for information the repo cannot reveal, such as intended audience, execution context, risk tolerance, or environment constraints.
+If the intended audience is unclear, ask whether the plan is for QA, UAT, release validation, regression, or developer self-test. First recover any missing context from the codebase, existing tests, CI, linked work items, or repo docs. Ask the user only for information the repo cannot reveal, such as audience, execution context, risk tolerance, or environment constraints.
 
 ## Workflow
 
 ### 1. Gather source material
 
-Read the authoritative inputs first. Prefer explicit requirements over inferred behavior.
-
-Before asking clarifying questions, inspect the relevant code, existing coverage, integration points, and nearby documentation when they are available. Use user questions to resolve product intent, ambiguous acceptance criteria, or business priority, not facts the repository already contains.
+Read the authoritative inputs first. Prefer explicit requirements over inferred behavior, and inspect relevant code, existing coverage, integration points, and nearby documentation before asking clarifying questions.
 
 Capture:
 
@@ -37,7 +33,7 @@ Capture:
 - edge cases and failure modes
 - integrations, permissions, data states, and environment assumptions
 
-If key behavior is ambiguous, call it out and ask instead of silently guessing.
+If key behavior is ambiguous, call it out and ask instead of guessing.
 
 ### 2. Define plan structure
 
@@ -82,7 +78,7 @@ Map every test case back to its source:
 - PR or change summary
 - bug or incident being prevented
 
-Also note any requirements that do not yet have a planned test case, and any planned tests that are based on inferred risk rather than explicit requirements.
+Also note requirements without planned coverage and tests based on inferred risk rather than explicit requirements.
 
 ### 5. Right-size the plan
 

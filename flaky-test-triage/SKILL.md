@@ -1,6 +1,6 @@
 ---
 name: flaky-test-triage
-description: Triage unstable test failures by gathering recent evidence, classifying flaky versus real versus environmental issues, inspecting code history, and proposing the right response. Use when the user asks about flaky tests, CI flakes, quarantining tests, recurring test failures, unstable pipelines, or failure triage workflows.
+description: Triage unstable test failures by gathering evidence, classifying flaky versus real versus environmental issues, inspecting code history, and proposing the right response. Use when the user asks about flaky tests, CI flakes, quarantining tests, recurring test failures, unstable pipelines, or failure triage workflows.
 ---
 
 # Flaky Test Triage
@@ -9,9 +9,7 @@ Treat repeated test failures as an investigation workflow, not just a rerun prob
 
 ## Inputs
 
-You need the failing test, job, pipeline, or error evidence to investigate. If the relevant CI system, failure history, or quarantine policy is unclear, ask first.
-
-Prefer evidence gathering over early questioning. Inspect failure logs, test history, recent changes, nearby tests, and environment signals before asking the user for more context. Ask only when access to CI history, quarantine policy, or environmental details is missing.
+You need the failing test, job, pipeline, or error evidence to investigate. Prefer evidence gathering over early questions: inspect failure logs, test history, recent changes, nearby tests, and environment signals first. Ask only when CI history, quarantine policy, or environmental details are missing.
 
 ## Workflow
 
@@ -26,8 +24,6 @@ Collect the most recent useful signals before deciding anything:
 - whether reruns pass without code changes
 
 Do not classify a failure from one isolated log line when broader run history is available.
-
-If the repository or CI artifacts can answer a question, inspect them first. Do not ask the user to explain likely causes before you have gathered the available failure evidence yourself.
 
 ### 2. Classify the failure
 
@@ -49,7 +45,7 @@ Check what changed around the failure:
 - ownership and `git blame` clues
 - timing with dependency, config, or environment changes
 
-Prefer evidence from history over guesses about flakiness.
+Prefer history over guesses about flakiness.
 
 ### 4. Look for common flake patterns
 
@@ -63,7 +59,7 @@ Check for known causes such as:
 - data collisions and cleanup leaks
 - assertions on eventually consistent behavior
 
-If the repo already has a flake taxonomy or retry policy, follow it.
+Follow any repo-specific flake taxonomy or retry policy.
 
 ### 5. Choose the response deliberately
 
@@ -89,7 +85,7 @@ When reporting or updating tracking systems, include:
 
 If the test is quarantined, say why, for how long if known, and what would be required to restore it.
 
-## Output
+## Report Back
 
 Unless the user asks for another format, provide:
 
@@ -98,12 +94,3 @@ Unless the user asks for another format, provide:
 3. the likely root cause
 4. the recommended action
 5. any follow-up needed
-
-## Report Back
-
-Briefly tell the user:
-
-- whether the issue looks flaky, real, environmental, or still unclear
-- what history or blame signals you used
-- whether you recommend a fix, quarantine, or environment change
-- what additional evidence would improve confidence

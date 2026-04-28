@@ -1,6 +1,6 @@
 ---
 name: test-writing
-description: Infer a repository's testing conventions and write new or updated tests that match them closely. Use when the user asks for unit tests, integration tests, regression tests, test fixes, coverage for a change, or help understanding local test style.
+description: Infer a repo's testing conventions and write new or updated tests that match them closely. Use when the user asks for unit tests, integration tests, regression tests, test fixes, coverage for a change, or help understanding local test style.
 ---
 
 # Test Writing
@@ -22,7 +22,7 @@ Inspect the nearest relevant tests before writing anything:
 - test config files and package/project manifests
 - shared test helpers, builders, fixtures, factories, or base classes
 
-If a missing answer can be recovered from nearby code, tests, config, or helpers, inspect those first. Ask the user only when the intended behavior, risk focus, or desired test level is still unclear after local exploration.
+If a missing answer can be recovered from nearby code, tests, config, or helpers, inspect those first. Ask the user only when the intended behavior, risk focus, or desired test level is still unclear.
 
 Extract and mirror the local conventions:
 
@@ -34,7 +34,7 @@ Extract and mirror the local conventions:
 - assertion style
 - structure style (`AAA`, `Given-When-Then`, or the local variant)
 
-If the repo does not provide enough prior art, stop and ask the user instead of inventing a style.
+If the repo does not provide enough prior art, stop and ask instead of inventing a style.
 
 ### 2. Follow hard rules
 
@@ -43,7 +43,7 @@ If the repo does not provide enough prior art, stop and ask the user instead of 
 - Keep tests small and specific.
 - Do not add comments to unit tests.
 - In .NET code, use `NSubstitute` and `Shouldly`, not `Moq` or `FluentAssertions`.
-- Put new tests where the repo already expects them unless the user asks otherwise.
+- Put new tests where the repo expects them unless the user asks otherwise.
 
 ### 3. Choose the right scope
 

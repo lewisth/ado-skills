@@ -1,6 +1,6 @@
 ---
 name: api-testing
-description: Write API tests that match the repository's conventions for REST or GraphQL validation, auth handling, contract testing, and real-versus-mocked dependencies. Use when the user asks for endpoint tests, API integration tests, contract tests, Pact, Spring Cloud Contract, GraphQL coverage, or request/response validation.
+description: Write API tests that match the repo's conventions for REST or GraphQL validation, auth handling, contract testing, and dependency strategy. Use when the user asks for endpoint tests, API integration tests, contract tests, Pact, Spring Cloud Contract, GraphQL coverage, or request/response validation.
 ---
 
 # API Testing
@@ -15,9 +15,7 @@ You need the endpoint, schema, query, mutation, contract, or integration behavio
 
 ### 1. Discover the local API test style
 
-Inspect nearby API tests, shared helpers, test hosts, and config first.
-
-Resolve local conventions from the repository before asking for guidance. Inspect nearby tests, client helpers, auth setup, fixtures, and service boundaries first. Ask the user only if the intended test level or contract expectations remain ambiguous.
+Inspect nearby API tests, shared helpers, test hosts, config, auth setup, fixtures, and service boundaries first. Ask the user only if the intended test level or contract expectations are still unclear.
 
 Capture:
 
@@ -28,7 +26,7 @@ Capture:
 - schema or contract validation approach
 - whether tests use real services, test containers, stubs, or mocks
 
-If the repo already has a preferred level for API testing, follow it.
+Follow the repo's preferred API test level when it has one.
 
 ### 2. Validate the right things
 
@@ -41,7 +39,7 @@ Cover behavior that matters externally:
 - validation failures
 - important side effects and persistence outcomes
 
-Prefer contract and schema confidence over assertions on internal implementation details.
+Prefer contract and schema confidence over internal implementation assertions.
 
 ### 3. Respect dependency strategy
 
@@ -60,7 +58,7 @@ Do not switch test levels casually. If the right level is ambiguous, ask and exp
 - Avoid embedding secrets or production credentials.
 - Keep test data scoped to the scenario under test.
 
-For GraphQL, mirror the repo's query organization, variable setup, and error assertions.
+For GraphQL, mirror the repo's query structure, variable setup, and error assertions.
 
 ### 5. Keep suites readable
 
@@ -68,9 +66,9 @@ Structure new tests like neighboring files:
 
 - group by resource, route, or resolver if that is the local pattern
 - keep one behavioral concern per test
-- name tests after the external contract being validated
+- name tests after the external contract they validate
 
-Do not mix unrelated endpoints or behaviors into one test file without prior art.
+Do not mix unrelated endpoints or behaviors in one test file without prior art.
 
 ### 6. Validate safely
 

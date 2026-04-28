@@ -1,6 +1,6 @@
 ---
 name: e2e-automation
-description: Write end-to-end tests that match the repository's browser automation patterns, including page objects, locator strategy, waits, retries, and spec layout. Use when the user asks for Playwright, Cypress, Selenium, browser E2E, UI automation, flaky spec fixes, or new end-to-end coverage.
+description: Write end-to-end tests that match the repo's browser automation patterns for page objects, locators, waits, retries, and spec layout. Use when the user asks for Playwright, Cypress, Selenium, browser E2E, UI automation, flaky spec fixes, or new end-to-end coverage.
 ---
 
 # E2E Automation
@@ -15,9 +15,7 @@ You need the user flow, feature, bug, or page behavior to automate. If the targe
 
 ### 1. Discover the local E2E style
 
-Inspect the nearest existing specs, support files, fixtures, and config before writing anything.
-
-Explore the existing suite before asking questions. Inspect framework config, page objects, auth flows, fixtures, and locator patterns first. Ask the user only when environment setup, browser matrix, or intended coverage is still unclear.
+Inspect the nearest specs, support files, fixtures, config, page objects, auth flows, and locator patterns first. Ask the user only when environment setup, browser matrix, or intended coverage is still unclear.
 
 Capture:
 
@@ -28,7 +26,7 @@ Capture:
 - auth and test setup flow
 - waits, retries, and flake-handling conventions
 
-If the repo has no usable prior art, stop and ask instead of inventing a framework style.
+If the repo has no usable prior art, stop and ask instead of inventing a style.
 
 ### 2. Follow stable locator rules
 
@@ -37,12 +35,12 @@ If the repo has no usable prior art, stop and ask instead of inventing a framewo
 - Avoid selectors tied to styling, layout, or transient text unless that is the explicit behavior under test.
 - Match the repo's page object pattern when one exists.
 
-If a page object layer exists, extend it instead of bypassing it in a new spec.
+If a page object layer exists, extend it instead of bypassing it.
 
 ### 3. Use resilient timing strategies
 
 - Prefer condition-based waiting over sleeps.
-- Reuse the framework's built-in auto-wait behavior where applicable.
+- Reuse the framework's built-in auto-waiting where applicable.
 - Match the repo's retry policy instead of adding ad hoc loops.
 - Treat flake fixes as a signal to inspect root cause, not to stack more waiting.
 
@@ -59,7 +57,7 @@ Mirror local patterns for:
 - assertion style
 - cleanup responsibilities
 
-When multiple styles exist, follow the one nearest the feature under test.
+When multiple styles exist, follow the one nearest the feature.
 
 ### 5. Keep the coverage intentional
 
@@ -69,7 +67,7 @@ Automate the smallest high-value flow set:
 - risky regressions
 - cross-page flows that unit or integration tests cannot cover well
 
-Do not overload one spec with many unrelated assertions.
+Do not overload one spec with unrelated assertions.
 
 ### 6. Validate carefully
 

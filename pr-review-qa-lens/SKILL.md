@@ -1,6 +1,6 @@
 ---
 name: pr-review-qa-lens
-description: Review a pull request from a QA perspective by identifying break risk, missing coverage, edge cases, and rollback concerns. Use when the user asks for QA review of a PR, test-risk review, what could break, missing regression coverage, or release concerns in a code review.
+description: Review a pull request from a QA perspective by identifying break risk, missing coverage, edge cases, and rollback concerns. Use when the user asks for QA review of a PR, test-risk review, missing regression coverage, or release concerns in a code review.
 ---
 
 # PR Review QA Lens
@@ -9,17 +9,13 @@ Review pull requests as a QA partner, not just as a code reader.
 
 ## Inputs
 
-You need the PR, diff, or change summary to review. If the release context, affected workflows, or expected rollback path is unclear, ask first.
-
-Start by exploring the change and surrounding code before asking questions. Use the repository to identify affected journeys, existing coverage, integration boundaries, and rollback clues. Ask the user only when release context, business criticality, or intended behavior is still unclear.
+You need the PR, diff, or change summary to review. Explore the change and surrounding code first to identify affected journeys, existing coverage, integration boundaries, and rollback clues. Ask the user only when release context, business criticality, or intended behavior is still unclear.
 
 ## Workflow
 
 ### 1. Understand the change surface
 
-Read the PR, changed files, and any linked requirements first.
-
-Read beyond the diff when needed. Inspect nearby tests, touched modules, configuration, migrations, and linked code paths so the review reflects system risk rather than only changed lines.
+Read the PR, changed files, linked requirements, and any nearby tests, touched modules, config, migrations, or linked code paths needed to understand system risk.
 
 Identify:
 

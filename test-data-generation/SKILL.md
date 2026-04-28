@@ -1,6 +1,6 @@
 ---
 name: test-data-generation
-description: Generate realistic, policy-safe test data for automated and manual testing, including edge cases, malformed inputs, and internationalized content. Use when the user asks for test fixtures, sample payloads, factories, seed data, boundary-value cases, fake users, or guidance on synthetic versus anonymized production data.
+description: Generate realistic, policy-safe test data for automated and manual testing, including edge cases and internationalized content. Use when the user asks for test fixtures, sample payloads, factories, seed data, boundary-value cases, fake users, or guidance on synthetic versus anonymized production data.
 ---
 
 # Test Data Generation
@@ -15,9 +15,7 @@ You need the target behavior, schema, or workflow the data is meant to exercise.
 
 ### 1. Understand the data shape
 
-Inspect the code, schema, validators, and nearby tests first.
-
-Prefer discovery over guessing. Inspect schemas, validators, fixtures, factories, and nearby tests before asking the user for clarification. Ask only when privacy policy, data-source rules, or realism requirements cannot be inferred safely.
+Inspect the code, schema, validators, fixtures, factories, and nearby tests first. Ask only when privacy policy, data-source rules, or realism requirements cannot be inferred safely.
 
 Identify:
 
@@ -91,7 +89,7 @@ Before finishing, check that the generated data:
 
 If reproducibility matters, prefer seeded or fixed values.
 
-## Output
+## Report Back
 
 Unless the user asks for another format, provide:
 
@@ -99,12 +97,3 @@ Unless the user asks for another format, provide:
 2. the concrete test data or helper pattern
 3. the edge cases included
 4. any safety or policy assumptions
-
-## Report Back
-
-Briefly tell the user:
-
-- which local patterns or libraries you followed
-- which realistic and edge-case data you included
-- whether the data is synthetic or production-derived
-- any policy assumptions that still need confirmation
