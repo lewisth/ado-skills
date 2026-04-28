@@ -11,6 +11,8 @@ Evaluate release readiness with evidence, not optimism.
 
 You need the release candidate, change set, build, or deployment scope to assess. If the target environment, release window, or sign-off expectations are unclear, ask first.
 
+Recover as much release context as possible from the repository first, including deployment docs, migrations, feature flags, smoke suites, and monitoring references. Ask the user only for decisions or context the repo cannot answer, such as release window, sign-off expectations, accepted risks, or environment-specific constraints.
+
 ## Workflow
 
 ### 1. Establish release scope
@@ -35,6 +37,8 @@ Collect the current signals that matter:
 - monitoring, alerting, and post-release checks
 
 Do not give release confidence without concrete evidence.
+
+Explore the codebase and delivery artifacts before questioning the user. Check for release notes, deployment steps, rollback guidance, smoke coverage, alerting hooks, dashboards, and recent changes that affect operational risk.
 
 ### 3. Assess deployment risk
 

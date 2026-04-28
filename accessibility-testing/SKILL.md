@@ -11,6 +11,8 @@ Test accessibility with both automation and manual checks, and keep the findings
 
 You need the page, flow, component, or feature to assess. If the target standard is unclear, default to WCAG 2.2 AA and call that out.
 
+Explore the codebase first for existing accessibility tooling, shared helpers, component patterns, and documented standards. Ask the user only when target conformance level, supported assistive technologies, or browser and device expectations remain unclear.
+
 ## Workflow
 
 ### 1. Discover the local a11y pattern

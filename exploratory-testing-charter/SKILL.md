@@ -11,6 +11,8 @@ Structure exploratory testing so the session stays focused, evidence-rich, and e
 
 You need the feature, workflow, risk area, or release scope to explore. If the session goal, audience, or time budget is unclear, ask first.
 
+Ask a small number of focused questions if the mission, time box, or target risk area is unclear. Do not let clarification overwhelm the speed and focus of the charter.
+
 ## Workflow
 
 ### 1. Define the mission

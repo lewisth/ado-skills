@@ -17,6 +17,8 @@ You need the user flow, feature, bug, or page behavior to automate. If the targe
 
 Inspect the nearest existing specs, support files, fixtures, and config before writing anything.
 
+Explore the existing suite before asking questions. Inspect framework config, page objects, auth flows, fixtures, and locator patterns first. Ask the user only when environment setup, browser matrix, or intended coverage is still unclear.
+
 Capture:
 
 - tool and runner (`Playwright`, `Cypress`, `Selenium`, etc.)

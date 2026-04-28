@@ -22,6 +22,8 @@ Inspect the nearest relevant tests before writing anything:
 - test config files and package/project manifests
 - shared test helpers, builders, fixtures, factories, or base classes
 
+If a missing answer can be recovered from nearby code, tests, config, or helpers, inspect those first. Ask the user only when the intended behavior, risk focus, or desired test level is still unclear after local exploration.
+
 Extract and mirror the local conventions:
 
 - framework and runner (`pytest`, `Jest`, `Vitest`, `xUnit`, `JUnit`, etc.)

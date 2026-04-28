@@ -11,11 +11,15 @@ Review pull requests as a QA partner, not just as a code reader.
 
 You need the PR, diff, or change summary to review. If the release context, affected workflows, or expected rollback path is unclear, ask first.
 
+Start by exploring the change and surrounding code before asking questions. Use the repository to identify affected journeys, existing coverage, integration boundaries, and rollback clues. Ask the user only when release context, business criticality, or intended behavior is still unclear.
+
 ## Workflow
 
 ### 1. Understand the change surface
 
 Read the PR, changed files, and any linked requirements first.
+
+Read beyond the diff when needed. Inspect nearby tests, touched modules, configuration, migrations, and linked code paths so the review reflects system risk rather than only changed lines.
 
 Identify:
 

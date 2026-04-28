@@ -17,6 +17,8 @@ You need the endpoint, schema, query, mutation, contract, or integration behavio
 
 Inspect nearby API tests, shared helpers, test hosts, and config first.
 
+Resolve local conventions from the repository before asking for guidance. Inspect nearby tests, client helpers, auth setup, fixtures, and service boundaries first. Ask the user only if the intended test level or contract expectations remain ambiguous.
+
 Capture:
 
 - REST, GraphQL, or mixed suite structure

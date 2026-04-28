@@ -17,6 +17,8 @@ You need the target behavior, schema, or workflow the data is meant to exercise.
 
 Inspect the code, schema, validators, and nearby tests first.
 
+Prefer discovery over guessing. Inspect schemas, validators, fixtures, factories, and nearby tests before asking the user for clarification. Ask only when privacy policy, data-source rules, or realism requirements cannot be inferred safely.
+
 Identify:
 
 - required and optional fields

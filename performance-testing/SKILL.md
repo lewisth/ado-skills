@@ -11,6 +11,8 @@ Write performance tests that reflect realistic load and assert against meaningfu
 
 You need the target system, critical user journey or API, environment, and performance question to answer. If the SLOs, traffic shape, or baseline expectations are unclear, ask first.
 
+First inspect the repository for existing performance scripts, thresholds, SLO references, dashboards, and environment guidance. Ask the user only for the performance question to answer, safe execution constraints, or targets that are not documented locally.
+
 ## Workflow
 
 ### 1. Discover the local performance approach

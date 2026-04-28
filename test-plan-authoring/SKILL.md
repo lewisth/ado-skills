@@ -18,11 +18,15 @@ You need at least one source of truth:
 
 If the intended audience is unclear, ask whether the plan is for QA, UAT, release validation, regression, or developer self-test.
 
+If important context is missing, first check whether the answer can be recovered from the codebase, existing tests, CI, linked work items, or repository docs. Ask the user only for information the repo cannot reveal, such as intended audience, execution context, risk tolerance, or environment constraints.
+
 ## Workflow
 
 ### 1. Gather source material
 
 Read the authoritative inputs first. Prefer explicit requirements over inferred behavior.
+
+Before asking clarifying questions, inspect the relevant code, existing coverage, integration points, and nearby documentation when they are available. Use user questions to resolve product intent, ambiguous acceptance criteria, or business priority, not facts the repository already contains.
 
 Capture:
 

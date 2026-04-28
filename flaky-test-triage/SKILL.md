@@ -11,6 +11,8 @@ Treat repeated test failures as an investigation workflow, not just a rerun prob
 
 You need the failing test, job, pipeline, or error evidence to investigate. If the relevant CI system, failure history, or quarantine policy is unclear, ask first.
 
+Prefer evidence gathering over early questioning. Inspect failure logs, test history, recent changes, nearby tests, and environment signals before asking the user for more context. Ask only when access to CI history, quarantine policy, or environmental details is missing.
+
 ## Workflow
 
 ### 1. Gather failure evidence
@@ -24,6 +26,8 @@ Collect the most recent useful signals before deciding anything:
 - whether reruns pass without code changes
 
 Do not classify a failure from one isolated log line when broader run history is available.
+
+If the repository or CI artifacts can answer a question, inspect them first. Do not ask the user to explain likely causes before you have gathered the available failure evidence yourself.
 
 ### 2. Classify the failure
 
