@@ -8,3 +8,10 @@ Interview me relentlessly about every aspect of this plan until we reach a share
 Ask the questions one at a time.
 
 If a question can be answered by exploring the codebase, explore the codebase instead.
+
+If codebase exploration reveals a bug or refactor candidate that could affect the design, stop and ask the user whether to include it in the spec before folding it in.
+
+Do not silently expand scope. Present the finding briefly, explain why it matters to the spec, and ask whether to:
+- include it in the spec
+- note it as a separate follow-up
+- ignore it for now
