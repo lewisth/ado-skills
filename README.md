@@ -99,6 +99,98 @@ Fetch one specific ADO PBI-like work item by ID, load its parent Feature context
 npx skills@latest add lewisth/ado-skills --skill implement-pbi
 ```
 
+## Testing And QA Skills
+
+These skills help with planning, writing, reviewing, and triaging testing work around features, bugs, releases, and PRs.
+
+### test-writing
+
+Infer the repo's testing conventions and write new or updated tests that match them closely.
+
+```bash
+npx skills@latest add lewisth/ado-skills --skill test-writing
+```
+
+### api-testing
+
+Write API tests that match the repo's conventions for REST or GraphQL validation, auth handling, contract testing, and dependency strategy.
+
+```bash
+npx skills@latest add lewisth/ado-skills --skill api-testing
+```
+
+### e2e-automation
+
+Write end-to-end tests that match the repo's browser automation patterns for page objects, locators, waits, retries, and spec layout.
+
+```bash
+npx skills@latest add lewisth/ado-skills --skill e2e-automation
+```
+
+### accessibility-testing
+
+Write accessibility testing guidance that combines automated checks, manual verification, and WCAG traceability.
+
+```bash
+npx skills@latest add lewisth/ado-skills --skill accessibility-testing
+```
+
+### exploratory-testing-charter
+
+Create session-based exploratory testing charters with a clear mission, time box, note-taking structure, and follow-up actions.
+
+```bash
+npx skills@latest add lewisth/ado-skills --skill exploratory-testing-charter
+```
+
+### flaky-test-triage
+
+Triage unstable test failures by gathering evidence, classifying flaky versus real versus environmental issues, inspecting code history, and proposing the right response.
+
+```bash
+npx skills@latest add lewisth/ado-skills --skill flaky-test-triage
+```
+
+### performance-testing
+
+Write performance test plans and scripts that match the repo's tooling, workload models, SLOs, and thresholds.
+
+```bash
+npx skills@latest add lewisth/ado-skills --skill performance-testing
+```
+
+### pr-review-qa-lens
+
+Review a pull request from a QA perspective by identifying break risk, missing coverage, edge cases, and rollback concerns.
+
+```bash
+npx skills@latest add lewisth/ado-skills --skill pr-review-qa-lens
+```
+
+### release-readiness
+
+Assess whether a change set is ready to release using smoke results, known issues, regression coverage, and deployment-risk checks.
+
+```bash
+npx skills@latest add lewisth/ado-skills --skill release-readiness
+```
+
+### test-data-generation
+
+Generate realistic, policy-safe test data for automated and manual testing, including edge cases and internationalized content.
+
+```bash
+npx skills@latest add lewisth/ado-skills --skill test-data-generation
+```
+
+### test-plan-authoring
+
+Generate structured test plans from requirements, user stories, bug reports, or pull requests with clear traceability and risk-based prioritization.
+
+```bash
+npx skills@latest add lewisth/ado-skills --skill test-plan-authoring
+```
+
 ## ADO Concepts Reference
 
 | GitHub | Azure DevOps |
